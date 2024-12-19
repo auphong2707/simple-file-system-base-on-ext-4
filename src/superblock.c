@@ -3,29 +3,61 @@
 #include <string.h>
 
 struct superblock {
-    uint32_t total_blocks;
-    uint32_t total_inodes;
-    uint32_t block_size;
-    uint32_t inode_size;
-    uint32_t blocks_per_group;
-    uint32_t inodes_per_group;
-    uint32_t first_data_block;
-    char fs_uuid[16];
-    char volume_name[32];
-    uint32_t magic_number;
+    uint32_t total_blocks;      // Total number of blocks in the file system.
+                                // This defines the total storage capacity in terms of blocks.
+
+    uint32_t total_inodes;      // Total number of inodes in the file system.
+                                // Inodes represent metadata for files and directories.
+
+    uint32_t block_size;        // Size of each block in bytes.
+                                // This determines how much data each block can store, e.g., 4096 bytes (4KB).
+
+    uint32_t inode_size;        // Size of each inode in bytes.
+                                // This defines how much metadata each inode can hold.
+
+    uint32_t blocks_per_group;  // Number of blocks in each block group.
+                                // The file system is divided into block groups for better management and locality.
+
+    uint32_t inodes_per_group;  // Number of inodes in each block group.
+                                // Specifies how many inodes are available per block group.
+
+    uint32_t first_data_block;  // Index of the first data block.
+                                // This typically skips reserved blocks, like the superblock and group descriptors.
+
+    char fs_uuid[16];           // A unique identifier (UUID) for the file system.
+                                // Helps distinguish between file systems, even on similar storage devices.
+
+    char volume_name[32];       // The name of the file system volume.
+                                // Provides a human-readable name for the file system.
+
+    uint32_t magic_number;      // A constant value to identify the file system type.
+                                // For example, 0xEF53 is commonly used for Ext4.
 };
 
-void initialize_superblock(struct superblock *sb, uint32_t total_blocks, uint32_t total_inodes, uint32_t block_size, uint32_t inode_size) {
+void initialize_superblock(
+        struct superblock *sb, 
+        uint32_t total_blocks, 
+        uint32_t total_inodes, 
+        uint32_t block_size, 
+        uint32_t inode_size,
+        uint32_t blocks_per_group,
+        uint32_t inodes_per_group,
+        uint32_t first_data_block,
+        const char *fs_uuid,
+        const char *volume_name,
+        uint32_t magic_number
+    ) 
+{
     sb->total_blocks = total_blocks;
     sb->total_inodes = total_inodes;
     sb->block_size = block_size;
     sb->inode_size = inode_size;
-    sb->blocks_per_group = 128;
-    sb->inodes_per_group = 32;
-    sb->first_data_block = 1;
-    strncpy(sb->fs_uuid, "123456789abcdef", 16);
-    strncpy(sb->volume_name, "MyFileSystem", 32);
-    sb->magic_number = 0xEF53;
+    sb->blocks_per_group = blocks_per_group;
+    sb->inodes_per_group = inodes_per_group;
+    sb->first_data_block = first_data_block;
+    strncpy(sb->fs_uuid, fs_uuid, sizeof(sb->fs_uuid) - 1);
+    strncpy(sb->volume_name, volume_name, sizeof(sb->volume_name) - 1);
+    sb->magic_number = magic_number;
 }
 
 void print_superblock(const struct superblock *sb) {
