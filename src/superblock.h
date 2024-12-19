@@ -1,8 +1,11 @@
+#ifndef SUPERBLOCK_H
+#define SUPERBLOCK_H
+
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 
-struct superblock {
+typedef struct superblock {
     uint32_t total_blocks;      // Total number of blocks in the file system.
                                 // This defines the total storage capacity in terms of blocks.
 
@@ -32,7 +35,7 @@ struct superblock {
 
     uint32_t magic_number;      // A constant value to identify the file system type.
                                 // For example, 0xEF53 is commonly used for Ext4.
-};
+} superblock;
 
 void initialize_superblock(
         struct superblock *sb, 
@@ -74,12 +77,5 @@ void print_superblock(const struct superblock *sb) {
     printf("Magic Number       : 0x%X\n", sb->magic_number);
 }
 
-// int main() {
-//     struct superblock sb;
 
-//     initialize_superblock(&sb, 1024, 128, 4096, 128);
-
-//     print_superblock(&sb);
-
-//     return 0;
-// }
+#endif // SUPERBLOCK_H
