@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 
-struct descriptor_block {
+struct group_descriptors {
     uint32_t block_bitmap;
     uint32_t inode_bitmap;
     uint32_t inode_table;
@@ -11,7 +11,7 @@ struct descriptor_block {
     uint32_t used_dirs_count;
 };
 
-void initialize_descriptor_block(struct descriptor_block *db, uint32_t block_bitmap, uint32_t inode_bitmap, uint32_t inode_table, uint32_t free_blocks_count, uint32_t free_inodes_count, uint32_t used_dirs_count) {
+void initialize_descriptor_block(struct group_descriptors *db, uint32_t block_bitmap, uint32_t inode_bitmap, uint32_t inode_table, uint32_t free_blocks_count, uint32_t free_inodes_count, uint32_t used_dirs_count) {
     db->block_bitmap = block_bitmap;
     db->inode_bitmap = inode_bitmap;
     db->inode_table = inode_table;
@@ -20,7 +20,7 @@ void initialize_descriptor_block(struct descriptor_block *db, uint32_t block_bit
     db->used_dirs_count = used_dirs_count;
 }
 
-void print_descriptor_block(const struct descriptor_block *db) {
+void print_descriptor_block(const struct group_descriptors *db) {
     printf("Descriptor Block Information:\n");
     printf("Block Bitmap Address   : %u\n", db->block_bitmap);
     printf("Inode Bitmap Address   : %u\n", db->inode_bitmap);
@@ -31,7 +31,7 @@ void print_descriptor_block(const struct descriptor_block *db) {
 }
 
 // int main() {
-//     struct descriptor_block db;
+//     struct group_descriptors db;
 
 //     initialize_descriptor_block(&db, 5, 6, 7, 100, 50, 10);
 
