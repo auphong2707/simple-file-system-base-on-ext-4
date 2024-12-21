@@ -4,15 +4,13 @@
 #include <stdint.h>
 #include "superblock.h"
 #include "group_descriptor.h"
-#include "data_block_bitmap.h"
+#include "bitmap.h"
+#include "inode.h"
 
 # define FILENAME "drive.bin"
 # define BLOCK_SIZE 4096
-# define INODE_SIZE 128
 # define BLOCKS_COUNT 32768
-# define INODES_COUNT 8192
 # define BLOCKS_PER_GROUP 16384
-# define INODES_PER_GROUP 4096
 
 // Create a file with the specified size
 void create_drive_file(const char *filename, uint64_t size) {
@@ -61,8 +59,16 @@ void initialize_drive(const char *filename) {
     fwrite(data_block_bitmap, BLOCKS_COUNT / 8, 1, file);
 
     // Write the inode Bitmap
+    uint8_t *inode_bitmap = (uint8_t *) malloc(INODES_COUNT / 8);
+    initialize_bitmap(inode_bitmap, INODES_COUNT);
+    fseek(file, 3 * BLOCK_SIZE, SEEK_SET);
+    fwrite(inode_bitmap, INODES_COUNT / 8, 1, file);
 
     // Write the inode Table
+    inode_table inode_table;
+    initialize_inode_table(&inode_table);
+    fseek(file, 4 * BLOCK_SIZE, SEEK_SET);
+    fwrite(&inode_table, sizeof(inode_table), 1, file);
 
     fclose(file);
 }
