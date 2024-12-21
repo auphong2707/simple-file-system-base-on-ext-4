@@ -3,6 +3,7 @@
 #include <string.h>
 
 #define MAX_INODES 100 // Maximum number of inodes in the table
+#define BITMAP_SIZE (MAX_INODES / 8) // Size of the bitmap in bytes
 
 // Define the inode structure
 struct inode {
@@ -19,8 +20,10 @@ struct inode {
 struct inode_table {
     struct inode inodes[MAX_INODES]; // Array of inodes
     uint32_t used_inodes;            // Number of inodes currently in use
-    uint8_t inode_bitmap[MAX_INODES / 8]; // Bitmap to track allocated inodes
 };
+
+// Define the inode bitmap as a standalone array
+uint8_t inode_bitmap[BITMAP_SIZE];
 
 // Function to initialize an inode
 void initialize_inode(struct inode *node, uint32_t inode_number, uint32_t file_type, uint32_t permissions) {
@@ -33,10 +36,10 @@ void initialize_inode(struct inode *node, uint32_t inode_number, uint32_t file_t
     node->permissions = permissions; // Set file permissions
 }
 
-// Function to initialize the inode table
+// Function to initialize the inode table and bitmap
 void initialize_inode_table(struct inode_table *table) {
     table->used_inodes = 0;
-    memset(table->inode_bitmap, 0, sizeof(table->inode_bitmap)); // Initialize bitmap to 0
+    memset(inode_bitmap, 0, sizeof(inode_bitmap)); // Initialize bitmap to 0
     for (int i = 0; i < MAX_INODES; i++) {
         initialize_inode(&table->inodes[i], 0, 0, 0); // Initialize all inodes with default values
     }
@@ -60,10 +63,10 @@ int is_bitmap_set(const uint8_t *bitmap, uint32_t index) {
 // Function to allocate a new inode in the table
 struct inode *allocate_inode(struct inode_table *table, uint32_t file_type, uint32_t permissions) {
     for (uint32_t i = 0; i < MAX_INODES; i++) {
-        if (!is_bitmap_set(table->inode_bitmap, i)) {
+        if (!is_bitmap_set(inode_bitmap, i)) {
             struct inode *new_inode = &table->inodes[i];
             initialize_inode(new_inode, i + 1, file_type, permissions);
-            set_bitmap(table->inode_bitmap, i);
+            set_bitmap(inode_bitmap, i);
             table->used_inodes++;
             return new_inode;
         }
@@ -79,8 +82,8 @@ void deallocate_inode(struct inode_table *table, uint32_t inode_number) {
         return;
     }
     uint32_t index = inode_number - 1;
-    if (is_bitmap_set(table->inode_bitmap, index)) {
-        clear_bitmap(table->inode_bitmap, index);
+    if (is_bitmap_set(inode_bitmap, index)) {
+        clear_bitmap(inode_bitmap, index);
         memset(&table->inodes[index], 0, sizeof(struct inode)); // Clear the inode
         table->used_inodes--;
     } else {
@@ -92,7 +95,7 @@ void deallocate_inode(struct inode_table *table, uint32_t inode_number) {
 void print_inode_table(const struct inode_table *table) {
     printf("Inode Table:\n");
     for (uint32_t i = 0; i < MAX_INODES; i++) {
-        if (is_bitmap_set(table->inode_bitmap, i)) {
+        if (is_bitmap_set(inode_bitmap, i)) {
             const struct inode *node = &table->inodes[i];
             printf("Inode Number: %u\n", node->inode_number);
             printf("  File Size: %u bytes\n", node->file_size);
