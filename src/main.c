@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include "superblock.h"
+#include "group_descriptor.h"
 
 # define FILENAME "drive.bin"
 # define BLOCK_SIZE 4096
@@ -34,12 +35,17 @@ void initialize_drive(const char *filename) {
         exit(EXIT_FAILURE);
     }
     
-    // Write the Super Block
+    // Write the Super Block to the First Block
     superblock sb;
     initialize_superblock(&sb, BLOCKS_COUNT, INODES_COUNT, BLOCK_SIZE, INODE_SIZE, BLOCKS_PER_GROUP, INODES_PER_GROUP, 2, "1234567890abcdef", "MyDrive", 0xEF53);
+    fseek(file, 0, SEEK_SET);
     fwrite(&sb, sizeof(superblock), 1, file);
 
-    // Write the Group Descriptors
+    // Write the Group Descriptor to the Second Block
+    struct group_descriptor gd;
+    initialize_descriptor_block(&gd, 2, 3, 4, BLOCKS_PER_GROUP - 5, INODES_PER_GROUP, 0);
+    fseek(file, BLOCK_SIZE, SEEK_SET);
+    fwrite(&gd, sizeof(struct group_descriptor), 1, file);
 
     // Write the Data Block Bitmap
 
