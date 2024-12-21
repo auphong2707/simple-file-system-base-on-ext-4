@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "superblock.h"
 #include "group_descriptor.h"
+#include "data_block_bitmap.h"
 
 # define FILENAME "drive.bin"
 # define BLOCK_SIZE 4096
@@ -48,12 +49,16 @@ void initialize_drive(const char *filename) {
     fwrite(&sb, sizeof(superblock), 1, file);
 
     // Write the Group Descriptor to the Second Block
-    struct group_descriptor gd;
+    group_descriptor gd;
     initialize_descriptor_block(&gd, 2, 3, 4, BLOCKS_PER_GROUP - 5, INODES_PER_GROUP, 0);
     fseek(file, BLOCK_SIZE, SEEK_SET);
     fwrite(&gd, sizeof(struct group_descriptor), 1, file);
 
     // Write the Data Block Bitmap
+    uint8_t *data_block_bitmap = (uint8_t *) malloc(BLOCKS_COUNT / 8);
+    initialize_bitmap(data_block_bitmap, BLOCKS_COUNT);
+    fseek(file, 2 * BLOCK_SIZE, SEEK_SET);
+    fwrite(data_block_bitmap, BLOCKS_COUNT / 8, 1, file);
 
     // Write the inode Bitmap
 

@@ -1,8 +1,9 @@
+#ifndef DATA_BLOCK_BITMAP_H
+#define DATA_BLOCK_BITMAP_H
+
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
-
-#define BLOCK_COUNT  // Maximum number of blocks in a block group
 
 // Initialize the bitmap (set all bits to 0)
 void initialize_bitmap(uint8_t *bitmap, int block_count) {
@@ -35,25 +36,4 @@ void print_bitmap(uint8_t *bitmap, int block_count) {
     printf("\n");
 }
 
-// int main() {
-//     uint8_t block_bitmap[(BLOCK_COUNT + 7) / 8]; // Declare the bitmap
-
-//     // Initialize the bitmap
-//     initialize_bitmap(block_bitmap, BLOCK_COUNT);
-//     printf("Initial bitmap: ");
-//     print_bitmap(block_bitmap, BLOCK_COUNT);
-
-//     // Allocate blocks 0, 1, and 2
-//     allocate_block(block_bitmap, 0);
-//     allocate_block(block_bitmap, 1);
-//     allocate_block(block_bitmap, 2);
-//     printf("After allocation: ");
-//     print_bitmap(block_bitmap, BLOCK_COUNT);
-
-//     // Free block 1
-//     free_block(block_bitmap, 1);
-//     printf("After freeing block 1: ");
-//     print_bitmap(block_bitmap, BLOCK_COUNT);
-
-//     return 0;
-// }
+#endif
