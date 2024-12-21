@@ -14,24 +14,24 @@ void initialize_bitmap(uint8_t *bitmap, int block_count) {
 }
 
 // Check if a block is free
-bool is_block_free(uint8_t *bitmap, int block_index) {
+bool is_bit_free(uint8_t *bitmap, int block_index) {
     return !(bitmap[block_index / 8] & (1 << (block_index % 8)));
 }
 
 // Mark a block as allocated
-void allocate_block(uint8_t *bitmap, int block_index) {
+void set_bitmap_bit(uint8_t *bitmap, int block_index) {
     bitmap[block_index / 8] |= (1 << (block_index % 8));
 }
 
 // Free a block (set it back to 0)
-void free_block(uint8_t *bitmap, int block_index) {
+void free_bitmap_bit(uint8_t *bitmap, int block_index) {
     bitmap[block_index / 8] &= ~(1 << (block_index % 8));
 }
 
 // Display the current state of the bitmap (for debugging purposes)
 void print_bitmap(uint8_t *bitmap, int block_count) {
     for (int i = 0; i < block_count; i++) {
-        printf("%d", is_block_free(bitmap, i) ? 0 : 1);
+        printf("%d", is_bit_free(bitmap, i) ? 0 : 1);
     }
     printf("\n");
 }

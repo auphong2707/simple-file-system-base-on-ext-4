@@ -50,10 +50,10 @@ void initialize_inode_table(inode_table *inode_table) {
 // Function to allocate a new inode in the table
 inode *allocate_inode(inode_table *inode_table, uint8_t *inode_bitmap, uint32_t file_type, uint32_t permissions) {
     for (uint32_t i = 0; i < INODES_COUNT; i++) {
-        if (is_block_free(inode_bitmap, i)) {
+        if (is_bit_free(inode_bitmap, i)) {
             inode *new_inode = &inode_table->inodes[i];
             initialize_inode(new_inode, i + 1, file_type, permissions);
-            set_bitmap(inode_bitmap, i);
+            set_bitmap_bit(inode_bitmap, i);
             inode_table->used_inodes++;
             return new_inode;
         }
@@ -69,8 +69,8 @@ void deallocate_inode(inode_table *inode_table, uint8_t *inode_bitmap, uint32_t 
         return;
     }
     uint32_t index = inode_number - 1;
-    if (!is_block_free(inode_bitmap, index)) {
-        clear_bitmap(inode_bitmap, index);
+    if (!is_bit_free(inode_bitmap, index)) {
+        free_bitmap_bit(inode_bitmap, index);
         memset(&inode_table->inodes[index], 0, sizeof(inode)); // Clear the inode
         inode_table->used_inodes--;
     } else {
@@ -82,7 +82,7 @@ void deallocate_inode(inode_table *inode_table, uint8_t *inode_bitmap, uint32_t 
 void print_inode_table(const inode_table *inode_table, uint8_t *inode_bitmap) {
     printf("Inode Table:\n");
     for (uint32_t i = 0; i < INODES_COUNT; i++) {
-        if (!is_block_free(inode_bitmap, i)) {
+        if (!is_bit_free(inode_bitmap, i)) {
             const inode *node = &inode_table->inodes[i];
             printf("Inode Number: %u\n", node->inode_number);
             printf("  File Size: %u bytes\n", node->file_size);
