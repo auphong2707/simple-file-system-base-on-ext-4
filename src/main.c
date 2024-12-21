@@ -27,7 +27,13 @@ void create_drive_file(const char *filename, uint64_t size) {
     fclose(file);
 }
 
-// Initialize the drive with the superblock, group descriptors, and other structures
+// Initialize the drive with the superblock, group descriptors, and other structures:
+// 1. Super Block: 1 block
+// 2. Group Descriptor: 1 block
+// 3. Data Block Bitmap: 1 block
+// 4. Inode Bitmap: 1 block
+// 5. Inode Table: Many blocks
+// 6. Data Blocks: Remaining blocks
 void initialize_drive(const char *filename) {
     FILE *file = fopen(filename, "rb+");
     if (file == NULL) {
