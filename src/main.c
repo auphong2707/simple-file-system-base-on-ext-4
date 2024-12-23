@@ -11,6 +11,7 @@
 # define BLOCK_SIZE 4096
 # define BLOCKS_COUNT 32768
 # define BLOCKS_PER_GROUP 16384
+# define MAX_INODE_COUNT 1024
 
 // Create a file with the specified size
 void create_drive_file(const char *filename, uint64_t size) {
@@ -71,6 +72,47 @@ void initialize_drive(const char *filename) {
     fwrite(&inode_table, sizeof(inode_table), 1, file);
 
     fclose(file);
+}
+
+// Create a file by allocating an inode and data block
+void create_file(FILE *file, uint8_t *inode_bitmap, int *inode_table, uint8_t *block_bitmap, size_t block_count, const char *data) {
+    // Find a free inode
+    int inode_index = -1;
+    for (size_t i = 0; i < MAX_INODE_COUNT; i++) {
+        if (!is_used(inode_bitmap, i)) {
+            inode_index = i;
+            set_used(inode_bitmap, i);
+            break;
+        }
+    }
+
+    if (inode_index == -1) {
+        fprintf(stderr, "Error: No free inodes available.\n");
+        return;
+    }
+
+    // Find a free block
+    int block_index = -1;
+    for (size_t i = 0; i < block_count; i++) {
+        if (!is_used(block_bitmap, i)) {
+            block_index = i;
+            set_used(block_bitmap, i);
+            break;
+        }
+    }
+
+    if (block_index == -1) {
+        fprintf(stderr, "Error: No free blocks available.\n");
+        set_free(inode_bitmap, inode_index); // Free the allocated inode
+        return;
+    }
+
+    // Assign the block to the inode
+    inode_table[inode_index] = block_index;
+
+    // Simulate writing data to the block (this would normally involve file I/O)
+    printf("File created with inode %d and block %d.\n", inode_index, block_index);
+    printf("Data: %s\n", data);
 }
 
 int main() {
