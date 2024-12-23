@@ -6,6 +6,7 @@
 #include "group_descriptor.h"
 #include "bitmap.h"
 #include "inode.h"
+#include "file.h"
 
 # define FILENAME "drive.bin"
 # define BLOCK_SIZE 4096
@@ -74,8 +75,8 @@ void initialize_drive(const char *filename) {
     fclose(file);
 }
 
-// Create a file by allocating an inode and data block
-void create_file(FILE *file, uint8_t *inode_bitmap, int *inode_table, uint8_t *block_bitmap, size_t block_count, const char *data) {
+// Create a file by allocating an inode and required data blocks
+void create_file(FILE *file, uint8_t *inode_bitmap, int *inode_table, uint8_t *block_bitmap, size_t block_count, file_t *file_info) {
     // Find a free inode
     int inode_index = -1;
     for (size_t i = 0; i < MAX_INODE_COUNT; i++) {
@@ -91,7 +92,7 @@ void create_file(FILE *file, uint8_t *inode_bitmap, int *inode_table, uint8_t *b
         return;
     }
 
-    size_t data_length = strlen(data);
+    size_t data_length = file_info->size;
     size_t blocks_needed = (data_length + BLOCK_SIZE - 1) / BLOCK_SIZE; // Round up to nearest block
     int *allocated_blocks = (int *)malloc(blocks_needed * sizeof(int));
     if (allocated_blocks == NULL) {
@@ -121,17 +122,21 @@ void create_file(FILE *file, uint8_t *inode_bitmap, int *inode_table, uint8_t *b
     // Assign the first block to the inode
     inode_table[inode_index] = allocated_blocks[0];
 
-    // Write data to allocated blocks
+    // Write file metadata to the allocated block
+    fseek(file, allocated_blocks[0] * BLOCK_SIZE, SEEK_SET);
+    fwrite(file_info, sizeof(file_t), 1, file);
+
+    // Write file data to remaining allocated blocks
     size_t bytes_written = 0;
-    for (size_t i = 0; i < blocks_needed; i++) {
+    for (size_t i = 1; i < blocks_needed; i++) {
         fseek(file, allocated_blocks[i] * BLOCK_SIZE, SEEK_SET);
         size_t bytes_to_write = (data_length - bytes_written > BLOCK_SIZE) ? BLOCK_SIZE : (data_length - bytes_written);
-        fwrite(data + bytes_written, 1, bytes_to_write, file);
+        fwrite(((char *)file_info) + sizeof(file_t) + bytes_written, 1, bytes_to_write, file);
         bytes_written += bytes_to_write;
     }
 
     printf("File created with inode %d and %zu blocks.\n", inode_index, blocks_needed);
-    printf("Data written: %s\n", data);
+    printf("Metadata written for file: %s.%s\n", file_info->name, file_info->extension);
 
     free(allocated_blocks);
 }
@@ -150,7 +155,7 @@ void delete_file(FILE *file, uint8_t *inode_bitmap, int *inode_table, uint8_t *b
     }
 
     // Free the inode
-    set_free(inode_bitmap, inode_index);    
+    set_free(inode_bitmap, inode_index);
     inode_table[inode_index] = -1;
 
     printf("File with inode %d deleted successfully.\n", inode_index);
