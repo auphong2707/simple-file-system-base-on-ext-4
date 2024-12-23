@@ -115,6 +115,26 @@ void create_file(FILE *file, uint8_t *inode_bitmap, int *inode_table, uint8_t *b
     printf("Data: %s\n", data);
 }
 
+// Delete a file by freeing its inode and data block
+void delete_file(FILE *file, uint8_t *inode_bitmap, int *inode_table, uint8_t *block_bitmap, int inode_index) {
+    if (inode_index < 0 || inode_index >= MAX_INODE_COUNT || !is_used(inode_bitmap, inode_index)) {
+        fprintf(stderr, "Error: Invalid inode index or inode not in use.\n");
+        return;
+    }
+
+    // Free the block associated with the inode
+    int block_index = inode_table[inode_index];
+    if (block_index >= 0 && block_index < BLOCKS_COUNT) {
+        set_free(block_bitmap, block_index);
+    }
+
+    // Free the inode
+    set_free(inode_bitmap, inode_index);
+    inode_table[inode_index] = -1;
+
+    printf("File with inode %d deleted successfully.\n", inode_index);
+}
+
 int main() {
     create_drive_file(FILENAME, BLOCK_SIZE * BLOCKS_COUNT);
     initialize_drive(FILENAME);
