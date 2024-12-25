@@ -13,7 +13,203 @@
 # define BLOCKS_COUNT 32768
 # define BLOCKS_PER_GROUP 16384
 # define MAX_INODE_COUNT 1024
+# define FIRST_DATA_BLOCK (4 + INODES_COUNT * INODE_SIZE / BLOCK_SIZE + 1)
 
+
+// [HELPER FUNCTIONS]
+// Find a free block and allocate it
+int find_and_allocate_free_block(uint8_t *block_bitmap, group_descriptor *gd) {
+    for (int i = 0; i < BLOCKS_COUNT; i++) {
+        if (!is_bit_set(block_bitmap, i)) {
+            set_bit(block_bitmap, i);
+            gd->free_blocks_count--;
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Read a block reference from the disk
+int read_block_reference(FILE *disk, uint32_t block_index, uint32_t entry_index, uint32_t *out_block_num) {
+    // Seek to: block_index * BLOCK_SIZE + entry_index * 4
+    if (fseek(disk, (long)block_index * BLOCK_SIZE + entry_index * sizeof(uint32_t), SEEK_SET) != 0) {
+        return -1;
+    }
+    if (fread(out_block_num, sizeof(uint32_t), 1, disk) != 1) {
+        return -1;
+    }
+    return 0;
+}
+
+// Write a block reference to the disk
+int write_block_reference(FILE *disk, uint32_t block_index, uint32_t entry_index, uint32_t block_num) {
+    if (fseek(disk, (long)block_index * BLOCK_SIZE + entry_index * sizeof(uint32_t), SEEK_SET) != 0) {
+        return -1;
+    }
+    if (fwrite(&block_num, sizeof(uint32_t), 1, disk) != 1) {
+        return -1;
+    }
+    return 0;
+}
+
+// Zero out a block on the disk
+void zero_block_on_disk(FILE *disk, uint32_t block_index) {
+    static uint8_t zero_buf[BLOCK_SIZE];
+    memset(zero_buf, 0, BLOCK_SIZE);
+    fseek(disk, (long)block_index * BLOCK_SIZE, SEEK_SET);
+    fwrite(zero_buf, BLOCK_SIZE, 1, disk);
+}
+
+/**
+ * Allocate a new data block for the 'n'-th (0-based) block of this inode.
+ * 
+ * Handling:
+ *  - If n < 12, uses direct blocks.
+ *  - If 12 <= n < 12 + 1024, uses single_indirect.
+ *  - If 12 + 1024 <= n < 12 + 1024 + (1024*1024), uses double_indirect.
+ *    (Ignoring triple-indirect for simplicity.)
+ * 
+ *  Each indirect block is an array of 1024 uint32_t block references.
+ * 
+ * Returns: the newly allocated block index on success, or -1 on failure.
+ */
+int allocate_data_block_for_inode(
+    FILE *disk,
+    inode *node,
+    uint32_t n,
+    uint8_t *block_bitmap,
+    group_descriptor *gd
+) {
+    // Step 1: find a free data block in the bitmap and allocate it
+    int new_data_block = find_and_allocate_free_block(block_bitmap, gd);
+    if (new_data_block == -1) {
+        fprintf(stderr, "Error: No free data blocks available.\n");
+        return -1;
+    }
+
+    zero_block_on_disk(disk, (uint32_t)new_data_block);
+
+    // Step 2: figure out where to store 'new_data_block' in the inode
+    // Step 2a: Direct blocks (0..11)
+    if (n < 12) {
+        node->blocks[n] = new_data_block;
+        return new_data_block;
+    }
+
+    // Step 2b: Single indirect range (12..12+1024-1)
+    uint32_t single_start = 12;
+    uint32_t single_end = single_start + 1024 - 1; // up to 12 + 1024 - 1 = 1035
+
+    if (n <= single_end) {
+        uint32_t si_offset = n - single_start;
+
+        // If single_indirect == 0, allocate the single-indirect block itself
+        if (node->single_indirect == 0) {
+            int si_block = find_and_allocate_free_block(block_bitmap, gd);
+            if (si_block == -1) {
+                fprintf(stderr, "Error: No free blocks for single indirect block.\n");
+                // rollback
+                free_bitmap_bit(block_bitmap, new_data_block);
+                gd -> free_blocks_count++;
+                return -1;
+            }
+            node->single_indirect = si_block;
+            zero_block_on_disk(disk, (uint32_t)si_block);
+        }
+
+        // Write 'new_data_block' to the single indirect block
+        if (write_block_reference(disk, node->single_indirect, si_offset, (uint32_t)new_data_block) != 0) {
+            fprintf(stderr, "Error: Could not write single_indirect reference.\n");
+            // roll back
+            free_bitmap_bit(block_bitmap, new_data_block);
+            gd->free_blocks_count++;
+            return -1;
+        }
+
+        return new_data_block;
+    }
+    
+    // Double indirect range: [12+1024, 12+1024+1024*1024 - 1]
+    uint32_t double_start = single_end + 1;
+    uint32_t double_end = 12 + 1024 + (1024 * 1024) - 1;
+
+    if (n > double_end) {
+        fprintf(stderr, "Error: Block index out of range.\n");
+        // roll back
+        free_bitmap_bit(block_bitmap, new_data_block);
+        gd->free_blocks_count++;
+        return -1;
+    }
+
+    // if we reach here, 1036 <= n <= double_end
+    uint32_t di_offset = n - double_start; // offset into double-indirect region
+    // Each single-indirect block can hold 1024 references, so:
+    uint32_t si_index   = di_offset / 1024;   // which single-indirect block inside double_indirect
+    uint32_t si_offset2 = di_offset % 1024;   // index within that single-indirect block
+
+    // If double_indirect == 0, allocate it
+    if (node->double_indirect == 0) {
+        int di_block = find_and_allocate_free_block(block_bitmap, gd);
+        if (di_block < 0) {
+            fprintf(stderr, "Error: No free blocks for double_indirect.\n");
+            free_bitmap_bit(block_bitmap, new_data_block);
+            gd->free_blocks_count++;
+            return -1;
+        }
+        node->double_indirect = di_block;
+        zero_block_on_disk(disk, (uint32_t)di_block);
+    }
+
+    // Now, read the block number of the 'si_index'-th single-indirect block from the double_indirect block.
+    uint32_t si_block_num;
+    if (read_block_reference(disk, node->double_indirect, si_index, &si_block_num) != 0) {
+        fprintf(stderr, "Error: Could not read from double_indirect block.\n");
+        free_bitmap_bit(block_bitmap, new_data_block);
+        gd->free_blocks_count++;
+        return -1;
+    }
+
+    // If si_block_num == 0, allocate a new single-indirect block
+    if (si_block_num == 0) {
+        int new_si_block = find_and_allocate_free_block(block_bitmap, gd);
+        if (new_si_block < 0) {
+            fprintf(stderr, "Error: No free blocks for double_indirect's single-indirect.\n");
+            free_bitmap_bit(block_bitmap, new_data_block);
+            gd->free_blocks_count++;
+            return -1;
+        }
+        // store it in the double_indirect block
+        if (write_block_reference(disk, node->double_indirect, si_index, (uint32_t)new_si_block) != 0) {
+            fprintf(stderr, "Error: Could not write new_si_block reference.\n");
+            free_bitmap_bit(block_bitmap, new_data_block);
+            gd->free_blocks_count++;
+            // also free new_si_block
+            free_bitmap_bit(block_bitmap, new_si_block);
+            gd->free_blocks_count++;
+            return -1;
+        }
+        si_block_num = (uint32_t)new_si_block;
+        zero_block_on_disk(disk, si_block_num);
+    }
+
+    // Finally, write the 'new_data_block' into the chosen single_indirect block at index si_offset2
+    if (write_block_reference(disk, si_block_num, si_offset2, (uint32_t)new_data_block) != 0) {
+        fprintf(stderr, "Error: Could not write to single_indirect block in double_indirect.\n");
+        free_bitmap_bit(block_bitmap, new_data_block);
+        gd->free_blocks_count++;
+        return -1;
+    }
+
+    return new_data_block;
+}
+
+
+// [END OF HELPER FUNCTIONS]
+
+
+
+
+// [MAIN FUNCTIONS]
 // Create a file with the specified size
 void create_drive_file(const char *filename, uint64_t size) {
     FILE *file = fopen(filename, "wb");
