@@ -29,8 +29,8 @@ void free_bitmap_bit(uint8_t *bitmap, int block_index) {
 }
 
 // Find a free block
-int find_free_block(uint8_t *bitmap, int block_count) {
-    for (int i = 0; i < block_count; i++) {
+int find_free_block(uint8_t *bitmap, int block_count, int start_from) {
+    for (int i = start_from; i < block_count; i++) {
         if (is_bit_free(bitmap, i)) {
             return i;
         }

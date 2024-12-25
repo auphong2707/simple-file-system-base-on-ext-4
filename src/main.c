@@ -107,14 +107,16 @@ void deallocate_inode(inode_table *itable,
 
 // Find a free block and allocate it
 int find_and_allocate_free_block(uint8_t *block_bitmap, group_descriptor *gd) {
-    for (int i = 0; i < BLOCKS_COUNT; i++) {
-        if (is_bit_free(block_bitmap, i)) {
-            set_bitmap_bit(block_bitmap, i);
-            gd->free_blocks_count--;
-            return i;
-        }
+    int free_index = find_free_block(block_bitmap, BLOCKS_COUNT, 1);
+    if (free_index < 0) {
+        fprintf(stderr, "Error: No free blocks available.\n");
+        return -1;
     }
-    return -1;
+
+    set_bitmap_bit(block_bitmap, free_index);
+    gd->free_blocks_count--;
+
+    return free_index;
 }
 
 // Read a block reference from the disk
@@ -409,7 +411,7 @@ void initialize_drive(const char *filename) {
         INODE_SIZE,
         BLOCKS_COUNT,
         INODES_COUNT,
-        2, // first_data_block
+        FIRST_DATA_BLOCK,
         "1234567890abcdef",
         "MyDrive",
         0xEF53
@@ -428,7 +430,7 @@ void initialize_drive(const char *filename) {
     );
 
     //data block bitmap (in memory)
-    uint8_t *data_block_bitmap = (uint8_t *) malloc(BLOCKS_COUNT / 8);
+    uint8_t *data_block_bitmap = (uint8_t *) malloc(BLOCKS_COUNT / 8 + 1);
     initialize_bitmap(data_block_bitmap, BLOCKS_COUNT);
     
     // inode bitmap (in memory)
@@ -466,7 +468,7 @@ void initialize_drive(const char *filename) {
                          + root_dir_block->entries_count * sizeof(dir_entry_t);
     
     // Allocate a data block for the root directory contents
-    int free_block_index = find_free_block(data_block_bitmap, BLOCKS_COUNT);
+    int free_block_index = find_free_block(data_block_bitmap, BLOCKS_COUNT, 1);
     if (free_block_index < 0) {
         fprintf(stderr, "Error: No free data blocks for root directory.\n");
         free(root_dir_block);
@@ -514,7 +516,7 @@ void initialize_drive(const char *filename) {
 
     fclose(file);
     printf("Drive initialized successfully with root directory at inode #%u (block %d).\n",
-           root_inode->inode_number, free_block_index);
+           root_inode->inode_number, (int)FIRST_DATA_BLOCK + free_block_index);
 }
 
 // Create a directory on the drive:
