@@ -777,6 +777,53 @@ void create_file(const char *filename,
     // Set the inode file size
     file_inode->file_size = (uint32_t)data_size;
 
+    // Add file to the parent directory's directory block
+    // Step 1: Locate the parent directory inode
+    inode *parent_inode = &itable.inodes[parent_inode_number - 1];
+    if (!parent_inode || parent_inode->file_type != 1) {
+        fprintf(stderr, "Error: invalid parent directory inode\n");
+        free(file_data);
+        goto cleanup;
+    }
+
+    // Step 2: Load the directory block from the parent directory
+    uint32_t dir_block_index = parent_inode->blocks[0]; // Assuming only one block for simplicity
+    if (dir_block_index == 0) {
+        fprintf(stderr, "Error: parent directory has no data blocks\n");
+        free(file_data);
+        goto cleanup;
+    }
+
+    directory_block_t *dir_block = (directory_block_t *)malloc(BLOCK_SIZE);
+    if (!dir_block) {
+        fprintf(stderr, "Error: could not allocate memory for directory block\n");
+        free(file_data);
+        goto cleanup;
+    }
+
+    fseek(disk, (FIRST_DATA_BLOCK + dir_block_index) * BLOCK_SIZE, SEEK_SET);
+    fread(dir_block, BLOCK_SIZE, 1, disk);
+
+    // Step 3: Add new directory entry
+    if (dir_block->entries_count >= BLOCK_SIZE / sizeof(dir_entry_t)) {
+        fprintf(stderr, "Error: directory block is full\n");
+        free(file_data);
+        free(dir_block);
+        goto cleanup;
+    }
+
+    dir_entry_t *new_entry = &dir_block->entries[dir_block->entries_count++];
+    new_entry->inode = file_inode->inode_number;
+    new_entry->rec_len = sizeof(dir_entry_t);
+    new_entry->name_len = strlen(file_name);
+    new_entry->file_type = 0; // Regular file
+    strncpy(new_entry->name, file_name, MAX_FILENAME_LEN);
+
+    // Step 4: Write the updated directory block back to disk
+    fseek(disk, (FIRST_DATA_BLOCK + dir_block_index) * BLOCK_SIZE, SEEK_SET);
+    fwrite(dir_block, BLOCK_SIZE, 1, disk);
+
+    free(dir_block);
     // 6. Allocate each needed block and write the file metadata/data
     uint8_t *src_ptr = (uint8_t *)file_data;
     size_t bytes_written = 0;
