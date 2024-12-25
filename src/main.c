@@ -876,7 +876,7 @@ cleanup:
     fclose(disk);
 }
 
-void delete_file(const char *filename, uint32_t inode_number) {
+void delete_file(const char *filename, uint32_t inode_number, uint32_t parent_inode_number) {
     FILE *disk = fopen(filename, "rb+");
     if (!disk) {
         fprintf(stderr, "Error: cannot open file %s\n", filename);
@@ -923,20 +923,58 @@ void delete_file(const char *filename, uint32_t inode_number) {
     // Deallocate the inode
     deallocate_inode(&itable, inode_bitmap, &gd, inode_number);
 
+    // Remove the file entry from the parent directory
+    inode *parent_inode = &itable.inodes[parent_inode_number - 1];
+    if (!parent_inode || parent_inode->file_type != 1) {
+        fprintf(stderr, "Error: invalid parent directory inode\n");
+        goto cleanup;
+    }
+
+    for (int i = 0; i < 12; i++) { // Process Direct Blocks
+        uint32_t dir_block_index = parent_inode->blocks[i];
+        if (dir_block_index == 0) break;
+
+        directory_block_t *dir_block = (directory_block_t *)malloc(BLOCK_SIZE);
+        if (!dir_block) {
+            fprintf(stderr, "Error: could not allocate memory for directory block\n");
+            goto cleanup;
+        }
+
+        fseek(disk, (FIRST_DATA_BLOCK + dir_block_index) * BLOCK_SIZE, SEEK_SET);
+        fread(dir_block, BLOCK_SIZE, 1, disk);
+
+        for (uint32_t j = 0; j < dir_block->entries_count; j++) {
+            if (dir_block->entries[j].inode == inode_number) {
+                // Shift entries to remove the deleted file
+                for (uint32_t k = j; k < dir_block->entries_count - 1; k++) {
+                    dir_block->entries[k] = dir_block->entries[k + 1];
+                }
+                dir_block->entries_count--;
+
+                // Write back the updated directory block
+                fseek(disk, (FIRST_DATA_BLOCK + dir_block_index) * BLOCK_SIZE, SEEK_SET);
+                fwrite(dir_block, BLOCK_SIZE, 1, disk);
+                free(dir_block);
+                goto directory_cleanup;
+            }
+        }
+        free(dir_block);
+    }
+
+    fprintf(stderr, "Error: file entry not found in parent directory\n");
+    goto cleanup;
+
+directory_cleanup:
     // Write updated metadata back to disk
-    // Group Descriptor
     fseek(disk, BLOCK_SIZE, SEEK_SET);
     fwrite(&gd, sizeof(gd), 1, disk);
 
-    // Block Bitmap
     fseek(disk, gd.block_bitmap * BLOCK_SIZE, SEEK_SET);
     fwrite(block_bitmap, BLOCKS_COUNT / 8, 1, disk);
 
-    // Inode Bitmap
     fseek(disk, gd.inode_bitmap * BLOCK_SIZE, SEEK_SET);
     fwrite(inode_bitmap, INODES_COUNT / 8, 1, disk);
 
-    // Inode Table
     fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
     fwrite(&itable, sizeof(itable), 1, disk);
 
