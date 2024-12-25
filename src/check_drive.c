@@ -58,11 +58,11 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    check_superblock(file);
-    check_group_descriptor(file);
-    check_bitmap(file, 2, "Data Block Bitmap", BLOCKS_COUNT);
-    check_bitmap(file, 3, "Inode Bitmap", INODES_COUNT);
-    check_inode_table(file, INODES_COUNT);
+    check_superblock(file);                                     printf("\n");
+    check_group_descriptor(file);                               printf("\n");
+    check_bitmap(file, 2, "Data Block Bitmap", BLOCKS_COUNT);   printf("\n");
+    check_bitmap(file, 3, "Inode Bitmap", INODES_COUNT);        printf("\n");
+    check_inode_table(file, INODES_COUNT);                      printf("\n");
 
     fclose(file);
     return 0;

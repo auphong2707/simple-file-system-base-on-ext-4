@@ -40,8 +40,11 @@ int find_free_block(uint8_t *bitmap, int block_count, int start_from) {
 
 // Display the current state of the bitmap (for debugging purposes)
 void print_bitmap(uint8_t *bitmap, int block_count) {
+    printf("Allocated blocks: ");
     for (int i = 0; i < block_count; i++) {
-        printf("%d", is_bit_free(bitmap, i) ? 0 : 1);
+        if (!is_bit_free(bitmap, i)) {
+            printf("%d ", i);
+        }
     }
     printf("\n");
 }
