@@ -712,70 +712,118 @@ cleanup:
     fclose(disk);
 }
 
-// Create a file by allocating an inode and required data blocks
-void create_file(FILE *file, uint8_t *inode_bitmap, int *inode_table, uint8_t *block_bitmap, size_t block_count, file_t *file_info) {
-    // Find a free inode
-    int inode_index = -1;
-    for (size_t i = 0; i < MAX_INODE_COUNT; i++) {
-        if (is_bit_free(inode_bitmap, i)) {
-            inode_index = i;
-            set_bitmap_bit(inode_bitmap, i);
-            break;
-        }
-    }
-
-    if (inode_index == -1) {
-        fprintf(stderr, "Error: No free inodes available.\n");
+void create_file(const char *filename, 
+                 const char *file_name, 
+                 const char *extension, 
+                 uint32_t permissions, 
+                 uint32_t parent_inode_number, 
+                 const char *data, 
+                 uint64_t file_size) {
+    FILE *disk = fopen(filename, "rb+");
+    if (!disk) {
+        fprintf(stderr, "Error: cannot open file %s\n", filename);
         return;
     }
 
-    size_t data_length = file_info->size;
-    size_t blocks_needed = (data_length + BLOCK_SIZE - 1) / BLOCK_SIZE; // Round up to nearest block
-    int *allocated_blocks = (int *)malloc(blocks_needed * sizeof(int));
-    if (allocated_blocks == NULL) {
-        fprintf(stderr, "Error: Memory allocation failed.\n");
-        return;
+    // 1. Read the group descriptor
+    group_descriptor gd;
+    fseek(disk, BLOCK_SIZE, SEEK_SET);
+    fread(&gd, sizeof(group_descriptor), 1, disk);
+
+    // 2. Read the block bitmap
+    uint8_t *block_bitmap = (uint8_t *)malloc(BLOCKS_COUNT / 8);
+    fseek(disk, gd.block_bitmap * BLOCK_SIZE, SEEK_SET);
+    fread(block_bitmap, BLOCKS_COUNT / 8, 1, disk);
+
+    // 3. Read the inode bitmap
+    uint8_t *inode_bitmap = (uint8_t *)malloc(INODES_COUNT / 8);
+    fseek(disk, gd.inode_bitmap * BLOCK_SIZE, SEEK_SET);
+    fread(inode_bitmap, INODES_COUNT / 8, 1, disk);
+
+    // 4. Read the inode table
+    inode_table itable;
+    fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
+    fread(&itable, sizeof(inode_table), 1, disk);
+
+    // 5. Allocate a new file inode
+    inode *file_inode = allocate_inode(&itable, inode_bitmap, &gd, 0, permissions);
+
+    if (!file_inode) {
+        fprintf(stderr, "Error: cannot allocate inode for file\n");
+        goto cleanup;
     }
 
-    // Find free blocks
-    size_t allocated_count = 0;
-    for (size_t i = 0; i < block_count && allocated_count < blocks_needed; i++) {
-        if (is_bit_free(block_bitmap, i)) {
-            allocated_blocks[allocated_count++] = i;
-            set_bitmap_bit(block_bitmap, i);
-        }
+    // Calculate the number of blocks needed for the file
+    size_t needed_blocks = (file_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    file_inode->file_size = (uint32_t)file_size;
+
+    // Allocate a temporary buffer to construct the file_t structure
+    size_t metadata_size = sizeof(file_t) + file_size;
+    file_t *file_metadata = (file_t *)malloc(metadata_size);
+    if (!file_metadata) {
+        fprintf(stderr, "Error: could not allocate memory for file metadata\n");
+        deallocate_inode(&itable, inode_bitmap, &gd, file_inode->inode_number);
+        goto cleanup;
     }
 
-    if (allocated_count < blocks_needed) {
-        fprintf(stderr, "Error: Not enough free blocks available.\n");
-        for (size_t i = 0; i < allocated_count; i++) {
-            free_bitmap_bit(block_bitmap, allocated_blocks[i]);
-        }
-        free_bitmap_bit(inode_bitmap, inode_index);
-        free(allocated_blocks);
-        return;
-    }
+    // Initialize the file_t structure
+    strncpy(file_metadata->name, file_name, sizeof(file_metadata->name) - 1);
+    strncpy(file_metadata->extension, extension, sizeof(file_metadata->extension) - 1);
+    file_metadata->type = 0; // Regular file
+    file_metadata->size = file_size;
+    file_metadata->inode = file_inode->inode_number;
+    memcpy(file_metadata->data, data, file_size);
 
-    // Assign the first block to the inode
-    inode_table[inode_index] = allocated_blocks[0];
-
-    // Write file metadata to the allocated block
-    fseek(file, allocated_blocks[0] * BLOCK_SIZE, SEEK_SET);
-    fwrite(file_info, sizeof(file_t), 1, file);
-
-    // Write file data to remaining allocated blocks
+    // 6. Allocate each needed block and write the file metadata/data
+    uint8_t *src_ptr = (uint8_t *)file_metadata;
     size_t bytes_written = 0;
-    for (size_t i = 1; i < blocks_needed; i++) {
-        fseek(file, allocated_blocks[i] * BLOCK_SIZE, SEEK_SET);
-        size_t bytes_to_write = (data_length - bytes_written > BLOCK_SIZE) ? BLOCK_SIZE : (data_length - bytes_written);
-        fwrite(((char *)file_info) + sizeof(file_t) + bytes_written, 1, bytes_to_write, file);
-        bytes_written += bytes_to_write;
+    for (size_t i = 0; i < needed_blocks; i++) {
+        // Use the extended allocate_data_block_for_inode
+        int allocated_block = allocate_data_block_for_inode(disk, file_inode, i, block_bitmap, &gd);
+        if (allocated_block < 0) {
+            fprintf(stderr, "Error: could not allocate data block for file.\n");
+            // Roll back the inode
+            deallocate_inode(&itable, inode_bitmap, &gd, file_inode->inode_number);
+            free(file_metadata);
+            goto cleanup;
+        }
+
+        // Write the slice of the file_metadata that fits in this block
+        size_t offset = i * BLOCK_SIZE;
+        size_t bytes_left = metadata_size - offset;
+        size_t to_write = (bytes_left > BLOCK_SIZE) ? BLOCK_SIZE : bytes_left;
+
+        fseek(disk, (FIRST_DATA_BLOCK + allocated_block) * BLOCK_SIZE, SEEK_SET);
+        fwrite(src_ptr + offset, to_write, 1, disk);
+
+        bytes_written += to_write;
     }
 
-    printf("File created with inode %d and %zu blocks.\n", inode_index, blocks_needed);
-    printf("Metadata written for file: %s.%s\n", file_info->name, file_info->extension);
+    free(file_metadata);
 
-    free(allocated_blocks);
+    // 7. Overwrite updated metadata structures
+    // Group Descriptor
+    fseek(disk, BLOCK_SIZE, SEEK_SET);
+    fwrite(&gd, sizeof(gd), 1, disk);
+
+    // Block Bitmap
+    fseek(disk, gd.block_bitmap * BLOCK_SIZE, SEEK_SET);
+    fwrite(block_bitmap, BLOCKS_COUNT / 8, 1, disk);
+
+    // Inode Bitmap
+    fseek(disk, gd.inode_bitmap * BLOCK_SIZE, SEEK_SET);
+    fwrite(inode_bitmap, INODES_COUNT / 8, 1, disk);
+
+    // Inode Table
+    fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
+    fwrite(&itable, sizeof(itable), 1, disk);
+
+    printf("File '%s' created (inode #%u). Size=%llu bytes.\n", file_name, file_inode->inode_number, file_size);
+
+cleanup:
+    free(block_bitmap);
+    free(inode_bitmap);
+    fclose(disk);
 }
 
 // Delete a file by freeing its inode and data block
