@@ -826,24 +826,76 @@ cleanup:
     fclose(disk);
 }
 
-// Delete a file by freeing its inode and data block
-void delete_file(FILE *file, uint8_t *inode_bitmap, int *inode_table, uint8_t *block_bitmap, int inode_index) {
-    if (inode_index < 0 || inode_index >= MAX_INODE_COUNT || is_bit_free(inode_bitmap, inode_index)) {
-        fprintf(stderr, "Error: Invalid inode index or inode not in use.\n");
+void delete_file(const char *filename, uint32_t inode_number) {
+    FILE *disk = fopen(filename, "rb+");
+    if (!disk) {
+        fprintf(stderr, "Error: cannot open file %s\n", filename);
         return;
     }
 
-    // Free the block associated with the inode
-    int block_index = inode_table[inode_index];
-    if (block_index >= 0 && block_index < BLOCKS_COUNT) {
-        free_bitmap_bit(block_bitmap, block_index);
+    // 1. Read the group descriptor
+    group_descriptor gd;
+    fseek(disk, BLOCK_SIZE, SEEK_SET);
+    fread(&gd, sizeof(group_descriptor), 1, disk);
+
+    // 2. Read the block bitmap
+    uint8_t *block_bitmap = (uint8_t *)malloc(BLOCKS_COUNT / 8);
+    fseek(disk, gd.block_bitmap * BLOCK_SIZE, SEEK_SET);
+    fread(block_bitmap, BLOCKS_COUNT / 8, 1, disk);
+
+    // 3. Read the inode bitmap
+    uint8_t *inode_bitmap = (uint8_t *)malloc(INODES_COUNT / 8);
+    fseek(disk, gd.inode_bitmap * BLOCK_SIZE, SEEK_SET);
+    fread(inode_bitmap, INODES_COUNT / 8, 1, disk);
+
+    // 4. Read the inode table
+    inode_table itable;
+    fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
+    fread(&itable, sizeof(inode_table), 1, disk);
+
+    // 5. Validate inode number
+    if (inode_number == 0 || inode_number > INODES_COUNT) {
+        fprintf(stderr, "Error: invalid inode number %u\n", inode_number);
+        goto cleanup;
     }
 
-    // Free the inode
-    free_bitmap_bit(inode_bitmap, inode_index);
-    inode_table[inode_index] = -1;
+    inode *file_inode = &itable.inodes[inode_number - 1];
 
-    printf("File with inode %d deleted successfully.\n", inode_index);
+    // Check if the inode is allocated
+    if (is_bit_free(inode_bitmap, inode_number - 1)) {
+        fprintf(stderr, "Error: inode #%u is not allocated.\n", inode_number);
+        goto cleanup;
+    }
+
+    // Free all data blocks used by the file
+    free_all_data_blocks_of_inode(disk, file_inode, block_bitmap, &gd);
+
+    // Deallocate the inode
+    deallocate_inode(&itable, inode_bitmap, &gd, inode_number);
+
+    // Write updated metadata back to disk
+    // Group Descriptor
+    fseek(disk, BLOCK_SIZE, SEEK_SET);
+    fwrite(&gd, sizeof(gd), 1, disk);
+
+    // Block Bitmap
+    fseek(disk, gd.block_bitmap * BLOCK_SIZE, SEEK_SET);
+    fwrite(block_bitmap, BLOCKS_COUNT / 8, 1, disk);
+
+    // Inode Bitmap
+    fseek(disk, gd.inode_bitmap * BLOCK_SIZE, SEEK_SET);
+    fwrite(inode_bitmap, INODES_COUNT / 8, 1, disk);
+
+    // Inode Table
+    fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
+    fwrite(&itable, sizeof(itable), 1, disk);
+
+    printf("File with inode #%u deleted successfully.\n", inode_number);
+
+cleanup:
+    free(block_bitmap);
+    free(inode_bitmap);
+    fclose(disk);
 }
 
 int main() {
