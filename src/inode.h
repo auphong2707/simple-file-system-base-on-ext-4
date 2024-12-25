@@ -8,7 +8,6 @@
 
 
 # define INODES_COUNT 8192
-# define INODE_SIZE 128
 # define INODES_PER_GROUP 4096
 
 // Define the inode structure
@@ -21,6 +20,8 @@ typedef struct inode {
     uint32_t file_type;          // Type of file (e.g., 0 = regular, 1 = directory)
     uint32_t permissions;        // Permissions (e.g., rwxrwxrwx as a bitmask)
 } inode;
+
+# define INODE_SIZE sizeof(inode)
 
 // Define the inode table
 typedef struct inode_table {
