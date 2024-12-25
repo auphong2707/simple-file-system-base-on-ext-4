@@ -28,6 +28,16 @@ void free_bitmap_bit(uint8_t *bitmap, int block_index) {
     bitmap[block_index / 8] &= ~(1 << (block_index % 8));
 }
 
+// Find a free block
+int find_free_block(uint8_t *bitmap, int block_count) {
+    for (int i = 0; i < block_count; i++) {
+        if (is_bit_free(bitmap, i)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 // Display the current state of the bitmap (for debugging purposes)
 void print_bitmap(uint8_t *bitmap, int block_count) {
     for (int i = 0; i < block_count; i++) {

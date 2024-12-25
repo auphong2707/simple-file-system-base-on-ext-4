@@ -80,7 +80,7 @@ void deallocate_inode(inode_table *itable,
     uint32_t index = inode_number - 1;
 
     // 2. Check if the bitmap bit is actually set
-    if (!is_bit_free(itable, index)) {
+    if (!is_bit_free(inode_bitmap, index)) {
         // For reporting, grab the inode before zeroing it
         inode *old_inode = &itable->inodes[index];
         uint32_t old_file_type = old_inode->file_type;
@@ -108,8 +108,8 @@ void deallocate_inode(inode_table *itable,
 // Find a free block and allocate it
 int find_and_allocate_free_block(uint8_t *block_bitmap, group_descriptor *gd) {
     for (int i = 0; i < BLOCKS_COUNT; i++) {
-        if (!is_bit_set(block_bitmap, i)) {
-            set_bit(block_bitmap, i);
+        if (is_bit_free(block_bitmap, i)) {
+            set_bitmap_bit(block_bitmap, i);
             gd->free_blocks_count--;
             return i;
         }
@@ -715,9 +715,9 @@ void create_file(FILE *file, uint8_t *inode_bitmap, int *inode_table, uint8_t *b
     // Find a free inode
     int inode_index = -1;
     for (size_t i = 0; i < MAX_INODE_COUNT; i++) {
-        if (!is_used(inode_bitmap, i)) {
+        if (is_bit_free(inode_bitmap, i)) {
             inode_index = i;
-            set_used(inode_bitmap, i);
+            set_bitmap_bit(inode_bitmap, i);
             break;
         }
     }
@@ -738,18 +738,18 @@ void create_file(FILE *file, uint8_t *inode_bitmap, int *inode_table, uint8_t *b
     // Find free blocks
     size_t allocated_count = 0;
     for (size_t i = 0; i < block_count && allocated_count < blocks_needed; i++) {
-        if (!is_used(block_bitmap, i)) {
+        if (is_bit_free(block_bitmap, i)) {
             allocated_blocks[allocated_count++] = i;
-            set_used(block_bitmap, i);
+            set_bitmap_bit(block_bitmap, i);
         }
     }
 
     if (allocated_count < blocks_needed) {
         fprintf(stderr, "Error: Not enough free blocks available.\n");
         for (size_t i = 0; i < allocated_count; i++) {
-            set_free(block_bitmap, allocated_blocks[i]);
+            free_bitmap_bit(block_bitmap, allocated_blocks[i]);
         }
-        set_free(inode_bitmap, inode_index);
+        free_bitmap_bit(inode_bitmap, inode_index);
         free(allocated_blocks);
         return;
     }
@@ -778,7 +778,7 @@ void create_file(FILE *file, uint8_t *inode_bitmap, int *inode_table, uint8_t *b
 
 // Delete a file by freeing its inode and data block
 void delete_file(FILE *file, uint8_t *inode_bitmap, int *inode_table, uint8_t *block_bitmap, int inode_index) {
-    if (inode_index < 0 || inode_index >= MAX_INODE_COUNT || !is_used(inode_bitmap, inode_index)) {
+    if (inode_index < 0 || inode_index >= MAX_INODE_COUNT || is_bit_free(inode_bitmap, inode_index)) {
         fprintf(stderr, "Error: Invalid inode index or inode not in use.\n");
         return;
     }
@@ -786,11 +786,11 @@ void delete_file(FILE *file, uint8_t *inode_bitmap, int *inode_table, uint8_t *b
     // Free the block associated with the inode
     int block_index = inode_table[inode_index];
     if (block_index >= 0 && block_index < BLOCKS_COUNT) {
-        set_free(block_bitmap, block_index);
+        free_bitmap_bit(block_bitmap, block_index);
     }
 
     // Free the inode
-    set_free(inode_bitmap, inode_index);
+    free_bitmap_bit(inode_bitmap, inode_index);
     inode_table[inode_index] = -1;
 
     printf("File with inode %d deleted successfully.\n", inode_index);
