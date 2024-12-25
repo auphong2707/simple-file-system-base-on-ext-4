@@ -203,6 +203,77 @@ int allocate_data_block_for_inode(
     return new_data_block;
 }
 
+// Frees(deallocates) the given block in the block bitmap.
+static void free_data_block(uint8_t *block_bitmap, group_descriptor *gd, int block_idx) {
+    free_bitmap_bit(block_bitmap, block_idx);
+    gd->free_blocks_count++;
+}
+
+// Free all data blocks (direct, single-indirect, double-indirect) used by 'node'.
+void free_all_data_blocks_of_inode(FILE *disk,
+                                   inode *node,
+                                   uint8_t *block_bitmap,
+                                   group_descriptor *gd)
+{
+    // 1. Free Direct blocks
+    for (int i = 0; i < 12; i++) {
+        if (node->blocks[i] != 0) {
+            free_data_block(block_bitmap, gd, node->blocks[i]);
+            node->blocks[i] = 0;
+        }
+    }
+
+    // 2. Free Single-Indirect blocks
+    if (node->single_indirect != 0) {
+        uint32_t block_ref;
+        for (int i = 0; i < BLOCK_SIZE / sizeof(uint32_t); i++) {
+            if (read_block_reference(disk, node->single_indirect, i, &block_ref) != 0) {
+                fprintf(stderr, "Warning: failed to read single-indirect block #%u index %d.\n",
+                        node->single_indirect, i);
+                break;
+            }
+            if (block_ref != 0) {
+                free_data_block(block_bitmap, gd, block_ref);
+            }
+        }
+        // free the signle-indirect block itself
+        free_data_block(block_bitmap, gd, node->single_indirect);
+        node->single_indirect = 0;
+    }
+
+    // 3. Free Double-Indirect blocks
+    if (node->double_indirect != 0) {
+        // The double-indirect block is an array of up to 1024 references,
+        // each pointing to a single-indirect block.
+        uint32_t si_block_num;
+        for (int i = 0; i < BLOCK_SIZE /sizeof(uint32_t); i++) {
+            if (read_block_reference(disk, node->double_indirect, i, &si_block_num) != 0) {
+                fprintf(stderr, "Warning: failed to read double-indirect block #%u index %d.\n",
+                        node->double_indirect, i);
+                break;
+            }
+            if (si_block_num != 0) {
+                uint32_t block_ref;
+                // For each single-indirect block, free up the blocks
+                for (int j = 0; j < BLOCK_SIZE / sizeof(uint32_t); j++) {
+                    if (read_block_reference(disk, si_block_num, j, &block_ref) != 0) {
+                        fprintf(stderr, "Warning: failed to read single-indirect block #%u index %d.\n",
+                                si_block_num, j);
+                        break;
+                    }
+                    if (block_ref != 0) {
+                        free_data_block(block_bitmap, gd, block_ref);
+                    }
+                }
+                // free the single-indirect block itself
+                free_data_block(block_bitmap, gd, si_block_num);
+            }
+        }
+        // now free the double-indirect block itself
+        free_data_block(block_bitmap, gd, node->double_indirect);
+        node->double_indirect = 0;
+    }
+}
 
 // [END OF HELPER FUNCTIONS]
 
@@ -381,6 +452,92 @@ void create_directory(const char *filename,
     fwrite(&itable, sizeof(itable), 1, disk);
 
     printf("Directory '%s' created (inode #%u). Size=%u bytes.\n", dir_name, dir_inode->inode_number, dir_inode->file_size);
+
+cleanup:
+    free(block_bitmap);
+    free(inode_bitmap);
+    fclose(disk);
+}
+
+void delete_directory(const char *filename, uint32_t dir_inode_number) {
+    // 1. Open the disk file
+    FILE *disk = fopen(filename, "rb+");
+    if (!disk) {
+        fprintf(stderr, "Error: cannot open file %s\n", filename);
+        return;
+    }
+
+    // 2. Read the group descriptor
+    group_descriptor gd;
+    fseek(disk, BLOCK_SIZE, SEEK_SET);
+    fread(&gd, sizeof(group_descriptor), 1, disk);
+
+    // 3. Read the block bitmap
+    uint8_t *block_bitmap = (uint8_t *)malloc(BLOCKS_COUNT / 8);
+    fseek(disk, gd.block_bitmap * BLOCK_SIZE, SEEK_SET);
+    fread(block_bitmap, BLOCKS_COUNT / 8, 1, disk);
+
+    // 4. Read the inode bitmap
+    uint8_t *inode_bitmap = (uint8_t *)malloc(INODES_COUNT / 8);
+    fseek(disk, gd.inode_bitmap * BLOCK_SIZE, SEEK_SET);
+    fread(inode_bitmap, INODES_COUNT / 8, 1, disk);
+
+    // 5. Read the inode table
+    inode_table itable;
+    fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
+    fread(&itable, sizeof(inode_table), 1, disk);
+
+
+    // Validate dir_inode_number
+    if (dir_inode_number == 0 || dir_inode_number > INODES_COUNT) {
+        fprintf(stderr, "Error: invalid inode number %u\n", dir_inode_number);
+        goto cleanup;
+    }
+
+    // 6. Grab a pointer to the indoe structure
+    inode *dir_inode = &itable.inodes[dir_inode_number - 1];
+
+    // Check if this inode is actually allocated
+    if (is_bit_free(inode_bitmap, dir_inode_number - 1)) {
+        fprintf(stderr, "Error: inode #%u is not allocated.\n", dir_inode_number);
+        goto cleanup;
+    }
+
+    // Optional: check if dir_inode->file_type == 1 (directory)
+    if (dir_inode->file_type != 1) {
+        fprintf(stderr, "Error: Inode #%u is not a directory (file_type=%u).\n",
+                dir_inode_number, dir_inode->file_type);
+        goto cleanup;
+    }
+
+    // 7. Free all blocks used by this directory (directory, single-indirect, double-indirect)
+    free_all_data_blocks_of_inode(disk, dir_inode, block_bitmap, &gd);
+
+    // 8. Deallocate the inode
+    deallocate_inode(&itable, inode_bitmap, dir_inode_number);
+
+    // Update the group descriptor counters
+    gd.free_inodes_count++;
+    gd.used_dirs_count--;
+
+    // 9. Write everything back
+    // group descriptor
+    fseek(disk, BLOCK_SIZE, SEEK_SET);
+    fwrite(&gd, sizeof(gd), 1, disk);
+
+    // block bitmap
+    fseek(disk, gd.block_bitmap * BLOCK_SIZE, SEEK_SET);
+    fwrite(block_bitmap, BLOCKS_COUNT / 8, 1, disk);
+
+    // inode bitmap
+    fseek(disk, gd.inode_bitmap * BLOCK_SIZE, SEEK_SET);
+    fwrite(inode_bitmap, INODES_COUNT / 8, 1, disk);
+
+    // inode table
+    fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
+    fwrite(&itable, sizeof(itable), 1, disk);
+
+    printf("Directory inode #%u deleted successfully.\n", dir_inode_number);
 
 cleanup:
     free(block_bitmap);
