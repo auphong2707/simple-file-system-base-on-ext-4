@@ -48,37 +48,6 @@ void initialize_inode_table(inode_table *inode_table) {
     }
 }
 
-// Function to allocate a new inode in the table
-inode *allocate_inode(inode_table *inode_table, uint8_t *inode_bitmap, uint32_t file_type, uint32_t permissions) {
-    for (uint32_t i = 0; i < INODES_COUNT; i++) {
-        if (is_bit_free(inode_bitmap, i)) {
-            inode *new_inode = &inode_table->inodes[i];
-            initialize_inode(new_inode, i + 1, file_type, permissions);
-            set_bitmap_bit(inode_bitmap, i);
-            inode_table->used_inodes++;
-            return new_inode;
-        }
-    }
-    printf("Error: Inode table is full.\n");
-    return NULL;
-}
-
-// Function to deallocate an inode
-void deallocate_inode(inode_table *inode_table, uint8_t *inode_bitmap, uint32_t inode_number) {
-    if (inode_number == 0 || inode_number > INODES_COUNT) {
-        printf("Error: Invalid inode number.\n");
-        return;
-    }
-    uint32_t index = inode_number - 1;
-    if (!is_bit_free(inode_bitmap, index)) {
-        free_bitmap_bit(inode_bitmap, index);
-        memset(&inode_table->inodes[index], 0, sizeof(inode)); // Clear the inode
-        inode_table->used_inodes--;
-    } else {
-        printf("Error: Inode %u is not allocated.\n", inode_number);
-    }
-}
-
 // Function to print all inodes in the table
 void print_inode_table(const inode_table *inode_table, uint8_t *inode_bitmap) {
     printf("Inode Table:\n");

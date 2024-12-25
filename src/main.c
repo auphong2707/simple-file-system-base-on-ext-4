@@ -17,6 +17,95 @@
 
 
 // [HELPER FUNCTIONS]
+// Allocate a new inode in the inode table
+inode *allocate_inode(inode_table *itable,
+                      uint8_t *inode_bitmap,
+                      group_descriptor *gd,
+                      uint32_t file_type,
+                      uint32_t permissions) 
+{
+    // 1. Quick check: if all inodes are in use at group level
+    if (gd->free_inodes_count == 0) {
+        fprintf(stderr, "Error: No free inodes available in the group.\n");
+        return NULL;
+    }
+
+    // 2. Also check local usage in inode_table struct
+    if (itable->used_inodes >= INODES_COUNT) {
+        fprintf(stderr, "Error: Inode table is full.\n");
+        return NULL;
+    }
+
+    // 3. Scan for a free bit in the inode bitmap
+    for (uint32_t i = 0; i < INODES_COUNT; i++) {
+        if (is_bit_free(inode_bitmap, i)) {
+            // Mark this bit as used
+            set_bitmap_bit(inode_bitmap, i);
+
+            // Decrement group descriptor's free inodes count
+            gd->free_inodes_count--;
+
+            // If it's a directory (by convention file_type=1), increment used_dirs_count
+            if (file_type == 1) {
+                gd->used_dirs_count++;
+            }
+
+            // Increment the local used_inodes count
+            itable->used_inodes++;
+
+            // Initialize the inode structure
+            inode *new_node = &itable->inodes[i];
+            initialize_inode(new_node, i, file_type, permissions);
+
+            return new_node;
+        }
+    }
+
+    // 4. If we exit the loop, there was no free inode
+    printf("Error: Inode bitmap indicates free inodes, but none found.\n");
+    return NULL;
+}
+
+// Deallocate an inode in the inode table
+void deallocate_inode(inode_table *itable,
+                      uint8_t *inode_bitmap,
+                      group_descriptor *gd,
+                      uint32_t inode_number) 
+{
+    // 1. Validate the inode_number
+    if (inode_number == 0 || inode_number > INODES_COUNT) {
+        printf("Error: Invalid inode number %u. \n", inode_number);
+        return;
+    }
+
+    uint32_t index = inode_number - 1;
+
+    // 2. Check if the bitmap bit is actually set
+    if (!is_bit_free(itable, index)) {
+        // For reporting, grab the inode before zeroing it
+        inode *old_inode = &itable->inodes[index];
+        uint32_t old_file_type = old_inode->file_type;
+
+        // Free the bit in the bitmap
+        free_bitmap_bit(inode_bitmap, index);
+
+        // If this was a directory, decrement used_dirs_count
+        if (old_file_type == 1) {
+            gd->used_dirs_count--;
+        }
+
+        // Clear the inode structure
+        memset(&itable->inodes[index], 0, sizeof(inode));
+
+        // Decrement the local used_inodes count
+        if (itable->used_inodes > 0) {
+            itable->used_inodes--;
+        }
+    } else {
+        printf("Error: Inode %u is not allocated.\n", inode_number);
+    }
+}
+
 // Find a free block and allocate it
 int find_and_allocate_free_block(uint8_t *block_bitmap, group_descriptor *gd) {
     for (int i = 0; i < BLOCKS_COUNT; i++) {
@@ -380,23 +469,19 @@ void create_directory(const char *filename,
     fread(&itable, sizeof(inode_table), 1, disk);
 
     // 5. Allocate a new directory inode
-    inode *dir_inode = allocate_inode(&itable, inode_bitmap, 1, permissions);
+    inode *dir_inode = allocate_inode(&itable, inode_bitmap, &gd, 1, permissions);
 
     if (!dir_inode) {
         fprintf(stderr, "Error: cannot allocate inode for directory\n");
         goto cleanup;
     }
-    gd.free_inodes_count--;
-    gd.used_dirs_count++;
 
     // 6. Build in-memory directory block with "." and ".."
     directory_block_t *dirblk = create_minimal_directory_block(dir_inode->inode_number, parent_inode_number);
     if (!dirblk) {
         fprintf(stderr, "Error: could not create minimal directory block in memory.\n");
         // Roll back the inode
-        deallocate_inode(&itable, inode_bitmap, dir_inode->inode_number);
-        gd.free_inodes_count++;
-        gd.used_dirs_count--;
+        deallocate_inode(&itable, inode_bitmap, &gd, dir_inode->inode_number);
         goto cleanup;
     }
 
@@ -413,9 +498,7 @@ void create_directory(const char *filename,
         if (allocated_block < 0) {
             fprintf(stderr, "Error: could not allocate data block for directory.\n");
             // Roll back the inode
-            deallocate_inode(&itable, inode_bitmap, dir_inode->inode_number);
-            gd.free_inodes_count++;
-            gd.used_dirs_count--;
+            deallocate_inode(&itable, inode_bitmap, &gd, dir_inode->inode_number);
             // Roll back the directory block
             free(dirblk);
             goto cleanup;
@@ -514,11 +597,7 @@ void delete_directory(const char *filename, uint32_t dir_inode_number) {
     free_all_data_blocks_of_inode(disk, dir_inode, block_bitmap, &gd);
 
     // 8. Deallocate the inode
-    deallocate_inode(&itable, inode_bitmap, dir_inode_number);
-
-    // Update the group descriptor counters
-    gd.free_inodes_count++;
-    gd.used_dirs_count--;
+    deallocate_inode(&itable, inode_bitmap, &gd, dir_inode_number);
 
     // 9. Write everything back
     // group descriptor
