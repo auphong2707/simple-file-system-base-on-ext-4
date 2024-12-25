@@ -8,7 +8,6 @@
 
 
 # define INODES_COUNT 8192
-# define INODES_PER_GROUP 4096
 
 // Define the inode structure
 typedef struct inode {

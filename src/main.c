@@ -11,7 +11,6 @@
 # define FILENAME "drive.bin"
 # define BLOCK_SIZE 4096
 # define BLOCKS_COUNT 32768
-# define BLOCKS_PER_GROUP 16384
 # define MAX_INODE_COUNT 1024
 # define FIRST_DATA_BLOCK (4 + INODES_COUNT * INODE_SIZE / BLOCK_SIZE + 1)
 
@@ -392,43 +391,130 @@ void create_drive_file(const char *filename, uint64_t size) {
 // 5. Inode Table: Many blocks
 // 6. Data Blocks: Remaining blocks
 void initialize_drive(const char *filename) {
+    // 1. Open the file for read/write
     FILE *file = fopen(filename, "rb+");
     if (file == NULL) {
         fprintf(stderr, "Error: Unable to open file %s\n", filename);
         exit(EXIT_FAILURE);
     }
-    
-    // Write the Super Block to the First Block
+
+    // 2. Build all structures in memory first
+    // superblock
     superblock sb;
-    initialize_superblock(&sb, BLOCKS_COUNT, INODES_COUNT, BLOCK_SIZE, INODE_SIZE, BLOCKS_PER_GROUP, INODES_PER_GROUP, 2, "1234567890abcdef", "MyDrive", 0xEF53);
+    initialize_superblock(
+        &sb,
+        BLOCKS_COUNT,
+        INODES_COUNT,
+        BLOCK_SIZE,
+        INODE_SIZE,
+        BLOCKS_COUNT,
+        INODES_COUNT,
+        2, // first_data_block
+        "1234567890abcdef",
+        "MyDrive",
+        0xEF53
+    );
+
+    // group descriptor
+    group_descriptor gd;
+    initialize_descriptor_block(
+        &gd,
+        2, // block_bitmap
+        3, // inode_bitmap
+        4, // inode_table
+        BLOCKS_COUNT - FIRST_DATA_BLOCK + 1,
+        INODES_COUNT,
+        0  // used_dirs_count
+    );
+
+    //data block bitmap (in memory)
+    uint8_t *data_block_bitmap = (uint8_t *) malloc(BLOCKS_COUNT / 8);
+    initialize_bitmap(data_block_bitmap, BLOCKS_COUNT);
+    
+    // inode bitmap (in memory)
+    uint8_t *inode_bitmap = (uint8_t * ) malloc(INODES_COUNT / 8);
+    initialize_bitmap(inode_bitmap, INODES_COUNT);
+
+    // inode table
+    inode_table itable;
+    initialize_inode_table(&itable);
+
+    // 3. Allocate the root directory
+    // Allocate the root inode (file_type=1 for directory, permissions=0755)
+    inode *root_inode = allocate_inode(&itable, inode_bitmap, &gd, 1, 0755);
+    if (!root_inode) {
+        fprintf(stderr, "Error: Could not allocate root directory inode. \n");
+        free(data_block_bitmap);
+        free(inode_bitmap);
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    // Build a minimal directory block (with '.' and '..')
+    directory_block_t *root_dir_block = create_minimal_directory_block(
+        root_inode->inode_number,   // '.' points to itself
+        root_inode->inode_number    // '..' also points to ifself for root
+    );
+    if (!root_dir_block) {
+        fprintf(stderr, "Error: Could not build root directory block.\n");
+        free(data_block_bitmap);
+        free(inode_bitmap);
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+    size_t root_dir_size = sizeof(directory_block_t)
+                         + root_dir_block->entries_count * sizeof(dir_entry_t);
+    
+    // Allocate a data block for the root directory contents
+    int free_block_index = find_free_block(data_block_bitmap, BLOCKS_COUNT);
+    if (free_block_index < 0) {
+        fprintf(stderr, "Error: No free data blocks for root directory.\n");
+        free(root_dir_block);
+        free(data_block_bitmap);
+        free(inode_bitmap);
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+    set_bitmap_bit(data_block_bitmap, free_block_index);
+    gd.free_blocks_count--;
+
+    // Update the root inode with this block
+    root_inode->blocks[0] = free_block_index;
+    root_inode->file_size = (uint32_t)root_dir_size;
+
+    // 4. Write the blocks into the disk
+    // Super block
     fseek(file, 0, SEEK_SET);
     fwrite(&sb, sizeof(superblock), 1, file);
 
-    // Write the Group Descriptor to the Second Block
-    group_descriptor gd;
-    initialize_descriptor_block(&gd, 2, 3, 4, BLOCKS_PER_GROUP - 5, INODES_PER_GROUP, 0);
+    // Group Descriptor
     fseek(file, BLOCK_SIZE, SEEK_SET);
-    fwrite(&gd, sizeof(struct group_descriptor), 1, file);
+    fwrite(&gd, sizeof(group_descriptor), 1, file);
 
-    // Write the Data Block Bitmap
-    uint8_t *data_block_bitmap = (uint8_t *) malloc(BLOCKS_COUNT / 8);
-    initialize_bitmap(data_block_bitmap, BLOCKS_COUNT);
-    fseek(file, 2 * BLOCK_SIZE, SEEK_SET);
+    // Block Bitmap
+    fseek(file, gd.block_bitmap * BLOCK_SIZE, SEEK_SET);
     fwrite(data_block_bitmap, BLOCKS_COUNT / 8, 1, file);
 
-    // Write the inode Bitmap
-    uint8_t *inode_bitmap = (uint8_t *) malloc(INODES_COUNT / 8);
-    initialize_bitmap(inode_bitmap, INODES_COUNT);
-    fseek(file, 3 * BLOCK_SIZE, SEEK_SET);
+    // Inode Bitmap
+    fseek(file, gd.inode_bitmap * BLOCK_SIZE, SEEK_SET);
     fwrite(inode_bitmap, INODES_COUNT / 8, 1, file);
 
-    // Write the inode Table
-    inode_table inode_table;
-    initialize_inode_table(&inode_table);
-    fseek(file, 4 * BLOCK_SIZE, SEEK_SET);
-    fwrite(&inode_table, sizeof(inode_table), 1, file);
+    // Inode Table
+    fseek(file, gd.inode_table * BLOCK_SIZE, SEEK_SET);
+    fwrite(&itable, sizeof(itable), 1, file);
+
+    // Root Directory
+    fseek(file, (long)(free_block_index + FIRST_DATA_BLOCK) * BLOCK_SIZE, SEEK_SET);
+    fwrite(root_dir_block, root_dir_size, 1, file);
+
+    // 5. Clean up in-memory structures
+    free(root_dir_block);
+    free(data_block_bitmap);
+    free(inode_bitmap);
 
     fclose(file);
+    printf("Drive initialized successfully with root directory at inode #%u (block %d).\n",
+           root_inode->inode_number, free_block_index);
 }
 
 // Create a directory on the drive:
