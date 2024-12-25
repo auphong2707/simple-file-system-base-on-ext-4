@@ -13,6 +13,7 @@ typedef struct {
     uint8_t type;        // File type (e.g., 0 = regular file, 1 = directory)
     uint64_t size;       // File size in bytes
     uint32_t inode;      // Inode number
+    char data[];         // Flexible array for variable-sized data
 } file_t;
 
 // Directory entry in ext4-like format (highly simplified)
@@ -72,6 +73,5 @@ directory_block_t* create_minimal_directory_block(uint32_t self_inode, uint32_t 
 
     return dirblk;
 }
-
 
 #endif // FILE_H
