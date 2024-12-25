@@ -746,41 +746,39 @@ void create_file(const char *filename,
     fread(&itable, sizeof(inode_table), 1, disk);
 
     // 5. Create the file_t structure
-    size_t data_length = strlen(data);
-    size_t metadata_size = sizeof(file_t) + data_length;
-    file_t *file_metadata = (file_t *)malloc(metadata_size);
-    if (!file_metadata) {
+    size_t data_size = sizeof(file_t) + strlen(data);
+    file_t *file_data = (file_t *)malloc(data_size);
+    if (!file_data) {
         fprintf(stderr, "Error: could not allocate memory for file metadata\n");
         goto cleanup;
     }
 
     // Initialize the file_t structure
-    strncpy(file_metadata->name, file_name, sizeof(file_metadata->name) - 1);
-    strncpy(file_metadata->extension, extension, sizeof(file_metadata->extension) - 1);
-    file_metadata->type = 0; // Regular file
-    file_metadata->size = data_length;
+    strncpy(file_data->name, file_name, sizeof(file_data->name) - 1);
+    strncpy(file_data->extension, extension, sizeof(file_data->extension) - 1);
+    file_data->type = 0; // Regular file
+    file_data->size = strlen(data);
 
-    // Calculate the number of blocks needed for the file
-    size_t needed_blocks = (data_length + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    // Calculate the number of blocks needed for the entire file metadata + data
+    size_t needed_blocks = (data_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
     // Allocate a new file inode
     inode *file_inode = allocate_inode(&itable, inode_bitmap, &gd, 0, permissions);
     if (!file_inode) {
         fprintf(stderr, "Error: cannot allocate inode for file\n");
-        free(file_metadata);
+        free(file_data);
         goto cleanup;
     }
-    file_metadata->inode = file_inode->inode_number;
+    file_data->inode = file_inode->inode_number;
 
-    // Write the file metadata to the disk
-    memcpy(file_metadata->data, data, data_length);
+    // Write the file metadata and data to the disk
+    memcpy(file_data->data, data, strlen(data));
 
     // Set the inode file size
-    file_inode->file_size = (uint32_t)data_length;
-
+    file_inode->file_size = (uint32_t)data_size;
 
     // 6. Allocate each needed block and write the file metadata/data
-    uint8_t *src_ptr = (uint8_t *)file_metadata;
+    uint8_t *src_ptr = (uint8_t *)file_data;
     size_t bytes_written = 0;
     for (size_t i = 0; i < needed_blocks; i++) {
         // Use the extended allocate_data_block_for_inode
@@ -789,13 +787,13 @@ void create_file(const char *filename,
             fprintf(stderr, "Error: could not allocate data block for file.\n");
             // Roll back the inode
             deallocate_inode(&itable, inode_bitmap, &gd, file_inode->inode_number);
-            free(file_metadata);
+            free(file_data);
             goto cleanup;
         }
 
         // Write the slice of the file_metadata that fits in this block
         size_t offset = i * BLOCK_SIZE;
-        size_t bytes_left = metadata_size - offset;
+        size_t bytes_left = data_size - offset;
         size_t to_write = (bytes_left > BLOCK_SIZE) ? BLOCK_SIZE : bytes_left;
 
         fseek(disk, (FIRST_DATA_BLOCK + allocated_block) * BLOCK_SIZE, SEEK_SET);
@@ -804,7 +802,7 @@ void create_file(const char *filename,
         bytes_written += to_write;
     }
 
-    free(file_metadata);
+    free(file_data);
 
     // 7. Overwrite updated metadata structures
     // Group Descriptor
