@@ -745,24 +745,12 @@ void create_file(const char *filename,
     fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
     fread(&itable, sizeof(inode_table), 1, disk);
 
-    // 5. Allocate a new file inode
-    inode *file_inode = allocate_inode(&itable, inode_bitmap, &gd, 0, permissions);
-
-    if (!file_inode) {
-        fprintf(stderr, "Error: cannot allocate inode for file\n");
-        goto cleanup;
-    }
-
-    // Calculate the number of blocks needed for the file
-    size_t needed_blocks = (file_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    file_inode->file_size = (uint32_t)file_size;
-
-    // Allocate a temporary buffer to construct the file_t structure
-    size_t metadata_size = sizeof(file_t) + file_size;
+    // 5. Create the file_t structure
+    size_t data_length = strlen(data);
+    size_t metadata_size = sizeof(file_t) + data_length;
     file_t *file_metadata = (file_t *)malloc(metadata_size);
     if (!file_metadata) {
         fprintf(stderr, "Error: could not allocate memory for file metadata\n");
-        deallocate_inode(&itable, inode_bitmap, &gd, file_inode->inode_number);
         goto cleanup;
     }
 
@@ -770,9 +758,26 @@ void create_file(const char *filename,
     strncpy(file_metadata->name, file_name, sizeof(file_metadata->name) - 1);
     strncpy(file_metadata->extension, extension, sizeof(file_metadata->extension) - 1);
     file_metadata->type = 0; // Regular file
-    file_metadata->size = file_size;
+    file_metadata->size = data_length;
+
+    // Calculate the number of blocks needed for the file
+    size_t needed_blocks = (data_length + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+    // Allocate a new file inode
+    inode *file_inode = allocate_inode(&itable, inode_bitmap, &gd, 0, permissions);
+    if (!file_inode) {
+        fprintf(stderr, "Error: cannot allocate inode for file\n");
+        free(file_metadata);
+        goto cleanup;
+    }
     file_metadata->inode = file_inode->inode_number;
-    memcpy(file_metadata->data, data, file_size);
+
+    // Write the file metadata to the disk
+    memcpy(file_metadata->data, data, data_length);
+
+    // Set the inode file size
+    file_inode->file_size = (uint32_t)data_length;
+
 
     // 6. Allocate each needed block and write the file metadata/data
     uint8_t *src_ptr = (uint8_t *)file_metadata;
