@@ -769,6 +769,8 @@ void create_file(const char *filename,
         free(file_data);
         goto cleanup;
     }
+    printf("Allocated inode #%u for file '%s'\n", file_inode->inode_number, file_name);
+
     file_data->inode = file_inode->inode_number;
 
     // Write the file metadata and data to the disk
@@ -1010,7 +1012,7 @@ void read_file(const char *filename, uint32_t inode_number) {
         return;
     }
 
-    inode *file_inode = &itable.inodes[inode_number - 1];
+    inode *file_inode = &itable.inodes[inode_number];
 
     // Check if the inode is allocated
     if (file_inode->file_size == 0) {
@@ -1141,7 +1143,7 @@ int main() {
     }
 
     create_file(DRIVE_NAME, "file1", "txt", 0644, 1, "Hello, World!", 13);
-    read_file(DRIVE_NAME, 2);
+    read_file(DRIVE_NAME, 1);
 
     // char input[MAX_INPUT_SIZE];
 
