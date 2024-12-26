@@ -1395,9 +1395,31 @@ cleanup:
 
 
 // [CLI FUNCTIONS]
+#define RED     "\033[1;31m"
+#define GREEN   "\033[1;32m"
+#define YELLOW  "\033[1;33m"
+#define BLUE    "\033[1;34m"
+#define RESET   "\033[0m"
+
 // Function to list directory contents
-void list_directory_cli(const char *path) {
-    // Not implemented yet
+void list_directory_cli(FILE *disk, uint32_t inode_number) {
+    directory_block_t *dir_block = read_directory(disk, inode_number);
+    if (!dir_block) {
+        fprintf(stderr, "Error: could not read directory block.\n");
+        return;
+    }
+
+    for (size_t i = 0; i < dir_block->entries_count; i++) {
+        dir_entry_t *entry = &dir_block->entries[i];
+
+        char *file_type = (entry->file_type == 0) ? "file" : "dir";
+        
+        if (entry->file_type == 1) {
+            printf(BLUE "%s/ (%s, inode=%u)\n" RESET, entry->name, file_type, entry->inode);
+        } else {
+            printf("%s (%s, inode=%u)\n", entry->name, file_type, entry->inode);
+        }
+    }
 }
 
 // Function to change directory
@@ -1431,82 +1453,73 @@ int main() {
         initialize_drive(disk);
     }
 
-    create_file(disk, "test", "txt", 0644, "Hello, World!", 0);
-    file_t* file = read_file(disk, 1);
+    char input[MAX_INPUT_SIZE];
+    uint32_t inode_number = 0;
 
-    if (file != NULL) {
-        printf("File Name: %s\n", file->name);
-        printf("File Extension: %s\n", file->extension);
-        printf("File Size: %lu bytes\n", (uint64_t)file->size);
-        printf("File Inode: %u\n", file->inode);
-        printf("File Data: %s\n", file->data);
-    } else {
-        printf("Error: Could not read file.\n");
+    char *cwd = malloc(MAX_INPUT_SIZE);
+    cwd = "root";
+
+    while(1) {
+        //Display the prompt
+        printf(GREEN "cli_fi %s>" RESET, cwd);
+        fflush(stdout);
+
+        // Read iinput
+        if (fgets(input, MAX_INPUT_SIZE, stdin) == NULL) {
+            printf("\n");
+            break;
+        }
+
+        // Remove trailing newline
+        input[strcspn(input, "\n")] = 0;
+
+        // Skip empty input
+        if (strlen(input) == 0) {
+            continue;
+        }
+
+        // Parse input
+        char *command = strtok(input, " ");
+        char *arg = strtok(NULL, " ");
+
+        // Execute command
+        if (strcmp(command, "ls") == 0) {
+            list_directory_cli(disk, inode_number);
+        }
+        else if (strcmp(command, "pwd") == 0) {
+            printf("%s\n", cwd);
+        }
+        else if (strcmp(command, "cd") == 0) {
+            if (arg != NULL) {
+                cwd = change_directory(arg);
+            } else {
+                printf("cd: missing argument\n");
+            }
+        }
+        else if (strcmp(command, "mkdir") == 0) {
+            if (arg != NULL) {
+                make_directory_cli(arg);
+            } else {
+                printf("mkdir: missing argument\n");
+            }
+        }
+        else if (strcmp(command, "rm") == 0) {
+            if (arg != NULL) {
+                remove_entry_cli(arg);
+            } else {
+                printf("rm: missing argument\n");
+            }
+        }
+        else if (strcmp(command, "exit") == 0) {
+            break;
+        }
+        else {
+            printf("Unknown command: %s\n", command);
+        }
     }
 
-    // char input[MAX_INPUT_SIZE];
-
-    // char *cwd = malloc(MAX_INPUT_SIZE);
-    // cwd = change_directory(".");
-
-    // while(1) {
-    //     //Display the prompt
-    //     printf("\033[1;32mcli_fi %s> \033[0m", cwd);
-    //     fflush(stdout);
-
-    //     // Read iinput
-    //     if (fgets(input, MAX_INPUT_SIZE, stdin) == NULL) {
-    //         printf("\n");
-    //         break;
-    //     }
-
-    //     // Remove trailing newline
-    //     input[strcspn(input, "\n")] = 0;
-
-    //     // Skip empty input
-    //     if (strlen(input) == 0) {
-    //         continue;
-    //     }
-
-    //     // Parse input
-    //     char *command = strtok(input, " ");
-    //     char *arg = strtok(NULL, " ");
-
-    //     // Execute command
-    //     if (strcmp(command, "ls") == 0) {
-    //         list_directory_cli(".");
-    //     }
-    //     else if (strcmp(command, "cd") == 0) {
-    //         if (arg != NULL) {
-    //             cwd = change_directory(arg);
-    //         } else {
-    //             printf("cd: missing argument\n");
-    //         }
-    //     }
-    //     else if (strcmp(command, "mkdir") == 0) {
-    //         if (arg != NULL) {
-    //             make_directory_cli(arg);
-    //         } else {
-    //             printf("mkdir: missing argument\n");
-    //         }
-    //     }
-    //     else if (strcmp(command, "rm") == 0) {
-    //         if (arg != NULL) {
-    //             remove_entry_cli(arg);
-    //         } else {
-    //             printf("rm: missing argument\n");
-    //         }
-    //     }
-    //     else if (strcmp(command, "exit") == 0) {
-    //         break;
-    //     }
-    //     else {
-    //         printf("Unknown command: %s\n", command);
-    //     }
-    // }
-
-    // printf("Exiting CLI.\n");
-    // return 0;
+    printf("Exiting CLI.\n");
+    return 0;
 
     fclose(disk);
 

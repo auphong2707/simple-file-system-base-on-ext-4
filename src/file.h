@@ -60,14 +60,14 @@ directory_block_t* create_minimal_directory_block(uint32_t self_inode, uint32_t 
     dirblk->entries[0].inode    = self_inode;
     dirblk->entries[0].rec_len  = sizeof(dir_entry_t);
     dirblk->entries[0].name_len = 1;
-    dirblk->entries[0].file_type = 2;  // Directory
+    dirblk->entries[0].file_type = 1;  // Directory
     strcpy(dirblk->entries[0].name, ".");
 
     // ".." entry
     dirblk->entries[1].inode    = parent_inode;
     dirblk->entries[1].rec_len  = sizeof(dir_entry_t);
     dirblk->entries[1].name_len = 2;
-    dirblk->entries[1].file_type = 2; // Directory
+    dirblk->entries[1].file_type = 1; // Directory
     strcpy(dirblk->entries[1].name, "..");
 
     return dirblk;
