@@ -628,6 +628,20 @@ void initialize_drive(FILE *disk) {
            root_inode->inode_number, (int)FIRST_DATA_BLOCK + free_block_index);
 }
 
+/**
+ * @brief Reads a file from the disk based on the given inode number.
+ *
+ * This function reads the group descriptor and inode table from the disk,
+ * validates the inode number, and retrieves the file data associated with
+ * the specified inode number. It allocates memory for the file data and
+ * reads the file content into the allocated memory.
+ *
+ * @param disk A pointer to the FILE object representing the disk.
+ * @param inode_number The inode number of the file to be read.
+ * @return A pointer to the file_t structure containing the file data, or
+ *         NULL if an error occurs (e.g., invalid inode number, inode not
+ *         allocated, memory allocation failure, or file data read failure).
+ */
 file_t* read_file(FILE* disk, uint32_t inode_number) {
 
     // 1. Read the group descriptor
@@ -675,6 +689,48 @@ file_t* read_file(FILE* disk, uint32_t inode_number) {
     }
 
     return file_data;
+}
+
+directory_block_t* read_directory(FILE* disk, uint32_t inode_number) {
+    // 1. Read the group descriptor
+    group_descriptor gd;
+    fseek(disk, BLOCK_SIZE, SEEK_SET);
+    fread(&gd, sizeof(group_descriptor), 1, disk);
+
+    // 2. Read the inode table
+    inode_table itable;
+    fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
+    fread(&itable, sizeof(inode_table), 1, disk);
+
+    // 3. Validate inode number
+    if (inode_number == 0 || inode_number > INODES_COUNT) {
+        fprintf(stderr, "Error: invalid inode number %u\n", inode_number);
+        return NULL;
+    }
+
+    inode *dir_inode = &itable.inodes[inode_number];
+
+    // Check if the inode is allocated
+    if (dir_inode->file_size == 0) {
+        fprintf(stderr, "Error: inode #%u is not allocated or is empty.\n", inode_number);
+        return NULL;
+    }
+
+    // Allocate memory to reconstruct the directory_block_t structure
+    size_t dir_size = dir_inode->file_size;
+    directory_block_t *dir_data = (directory_block_t *)malloc(dir_size);
+    if (!dir_data) {
+        fprintf(stderr, "Error: could not allocate memory to read directory.\n");
+        return NULL;
+    }
+
+    if (read_inode_data(disk, dir_inode, (char*) dir_data, dir_size) != 0) {
+        fprintf(stderr, "Error: could not read directory data.\n");
+        free(dir_data);
+        return NULL;
+    }
+
+    return dir_data;
 }
 
 // Create a directory on the drive:
