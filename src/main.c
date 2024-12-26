@@ -628,19 +628,19 @@ void initialize_drive(FILE *disk) {
            root_inode->inode_number, (int)FIRST_DATA_BLOCK + free_block_index);
 }
 
+
 /**
- * @brief Reads a file from the disk based on the given inode number.
+ * @brief Reads a file from the disk using its inode number.
  *
- * This function reads the group descriptor and inode table from the disk,
- * validates the inode number, and retrieves the file data associated with
- * the specified inode number. It allocates memory for the file data and
- * reads the file content into the allocated memory.
+ * This function reads the file data from the disk by locating the inode
+ * using the provided inode number. It first reads the group descriptor
+ * and inode table, validates the inode number, checks if the inode is
+ * allocated and is a file, and then reads the file data into a newly
+ * allocated memory buffer.
  *
- * @param disk A pointer to the FILE object representing the disk.
+ * @param disk Pointer to the disk file.
  * @param inode_number The inode number of the file to be read.
- * @return A pointer to the file_t structure containing the file data, or
- *         NULL if an error occurs (e.g., invalid inode number, inode not
- *         allocated, memory allocation failure, or file data read failure).
+ * @return Pointer to the file data structure (file_t) on success, or NULL on failure.
  */
 file_t* read_file(FILE* disk, uint32_t inode_number) {
 
@@ -662,19 +662,19 @@ file_t* read_file(FILE* disk, uint32_t inode_number) {
 
     inode *file_inode = &itable.inodes[inode_number];
 
-    for (int i = 0; i < 12; i++) {
-        printf("%u ", file_inode->blocks[i]);
-    }
-    printf("\nSingle Indirect Block: %u\n", file_inode->single_indirect);
-    printf("Double Indirect Block: %u\n", file_inode->double_indirect);
-
     // Check if the inode is allocated
     if (file_inode->file_size == 0) {
         fprintf(stderr, "Error: inode #%u is not allocated or is empty.\n", inode_number);
         return NULL;
     }
 
-    // Allocate memory to reconstruct the file_t structure
+    // Check if the inode is a file
+    if (file_inode->file_type != 0) {
+        fprintf(stderr, "Error: inode #%u is not a file.\n", inode_number);
+        return NULL;
+    }
+
+    // 4. Allocate memory to reconstruct the file_t structure and return
     size_t file_size = file_inode->file_size;
     file_t *file_data = (file_t *)malloc(file_size);
     if (!file_data) {
@@ -691,6 +691,23 @@ file_t* read_file(FILE* disk, uint32_t inode_number) {
     return file_data;
 }
 
+
+/**
+ * Reads the directory block associated with a given inode number from the disk.
+ *
+ * @param disk A pointer to the FILE object representing the disk.
+ * @param inode_number The inode number of the directory to read.
+ * @return A pointer to the directory_block_t structure containing the directory data,
+ *         or NULL if an error occurs (e.g., invalid inode number, inode not allocated,
+ *         inode is not a directory, memory allocation failure, or read error).
+ *
+ * The function performs the following steps:
+ * 1. Reads the group descriptor from the disk.
+ * 2. Reads the inode table from the disk.
+ * 3. Validates the inode number.
+ * 4. Checks if the inode is allocated and is a directory.
+ * 5. Allocates memory for the directory data and reads it from the disk.
+ */
 directory_block_t* read_directory(FILE* disk, uint32_t inode_number) {
     // 1. Read the group descriptor
     group_descriptor gd;
@@ -716,7 +733,13 @@ directory_block_t* read_directory(FILE* disk, uint32_t inode_number) {
         return NULL;
     }
 
-    // Allocate memory to reconstruct the directory_block_t structure
+    // Check if the inode is a directory
+    if (dir_inode->file_type != 1) {
+        fprintf(stderr, "Error: inode #%u is not a directory.\n", inode_number);
+        return NULL;
+    }
+
+    // 4. Allocate memory to reconstruct the directory_block_t structure and return
     size_t dir_size = dir_inode->file_size;
     directory_block_t *dir_data = (directory_block_t *)malloc(dir_size);
     if (!dir_data) {
