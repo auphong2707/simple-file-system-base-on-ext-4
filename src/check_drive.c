@@ -6,7 +6,7 @@
 # include "bitmap.h"
 # include "inode.h"
 
-# define FILENAME "drive.bin"
+# define DRIVE_NAME "drive.bin"
 # define BLOCK_SIZE 4096
 # define BLOCKS_COUNT 32768
 # define BLOCKS_PER_GROUP 16384
@@ -52,9 +52,9 @@ void check_inode_table(FILE *file, uint32_t size) {
 }
 
 int main() {
-    FILE *file = fopen(FILENAME, "rb");
+    FILE *file = fopen(DRIVE_NAME, "rb");
     if (file == NULL) {
-        fprintf(stderr, "Error: Unable to open file %s\n", FILENAME);
+        fprintf(stderr, "Error: Unable to open file %s\n", DRIVE_NAME);
         exit(EXIT_FAILURE);
     }
 

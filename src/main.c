@@ -8,12 +8,12 @@
 #include "inode.h"
 #include "file.h"
 
-# define FILENAME "drive.bin"
+# define DRIVE_NAME "drive.bin"
 # define BLOCK_SIZE 4096
 # define BLOCKS_COUNT 32768
 # define MAX_INODE_COUNT 1024
 # define FIRST_DATA_BLOCK (4 + INODES_COUNT * INODE_SIZE / BLOCK_SIZE + 1)
-
+#define MAX_INPUT_SIZE 1024
 
 // [HELPER FUNCTIONS]
 // Allocate a new inode in the inode table
@@ -986,7 +986,112 @@ cleanup:
     fclose(disk);
 }
 
+
+
+
+
+
+
+// [CLI FUNCTIONS]
+// Function to list directory contents
+void list_directory_cli(const char *path) {
+    // Not implemented yet
+}
+
+// Function to change directory
+char* change_directory(const char *path) {
+    // Not implemented yet
+}
+
+// Function to create a new directory
+void make_directory_cli(const char *path) {
+    // if (mkdir(path, 0755) != 0) {
+    //     perror("mkdir");
+    // }
+    // Not implemented yet
+}
+
+
+// Function to remove a file or directory
+void remove_entry_cli(const char *path) {
+    // Not implemented yet
+}
+
+// [END CLI FUNCTIONS]
+
+
 int main() {
-    create_drive_file(FILENAME, BLOCK_SIZE * BLOCKS_COUNT);
-    initialize_drive(FILENAME);
+    // Check if the drive file exists, if not, create it
+    FILE *file = fopen(DRIVE_NAME, "rb");
+    if (file == NULL) {
+        create_drive_file(DRIVE_NAME, BLOCK_SIZE * BLOCKS_COUNT);
+        // Initialize the drive
+        initialize_drive(DRIVE_NAME);
+    } else {
+        fclose(file);
+    }
+
+    char input[MAX_INPUT_SIZE];
+
+    char *cwd = malloc(MAX_INPUT_SIZE);
+    cwd = change_directory(".");
+
+    while(1) {
+        //Display the prompt
+        printf("\033[1;32mcli_fi %s> \033[0m", cwd);
+        fflush(stdout);
+
+        // Read iinput
+        if (fgets(input, MAX_INPUT_SIZE, stdin) == NULL) {
+            printf("\n");
+            break;
+        }
+
+        // Remove trailing newline
+        input[strcspn(input, "\n")] = 0;
+
+        // Skip empty input
+        if (strlen(input) == 0) {
+            continue;
+        }
+
+        // Parse input
+        char *command = strtok(input, " ");
+        char *arg = strtok(NULL, " ");
+
+        // Execute command
+        if (strcmp(command, "ls") == 0) {
+            list_directory_cli(".");
+        }
+        else if (strcmp(command, "cd") == 0) {
+            if (arg != NULL) {
+                cwd = change_directory(arg);
+            } else {
+                printf("cd: missing argument\n");
+            }
+        }
+        else if (strcmp(command, "mkdir") == 0) {
+            if (arg != NULL) {
+                make_directory_cli(arg);
+            } else {
+                printf("mkdir: missing argument\n");
+            }
+        }
+        else if (strcmp(command, "rm") == 0) {
+            if (arg != NULL) {
+                remove_entry_cli(arg);
+            } else {
+                printf("rm: missing argument\n");
+            }
+        }
+        else if (strcmp(command, "exit") == 0) {
+            break;
+        }
+        else {
+            printf("Unknown command: %s\n", command);
+        }
+    }
+
+    printf("Exiting CLI.\n");
+    return 0;
 }
