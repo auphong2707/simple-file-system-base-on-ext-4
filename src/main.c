@@ -1140,67 +1140,70 @@ int main() {
         fclose(file);
     }
 
-    char input[MAX_INPUT_SIZE];
+    create_file(DRIVE_NAME, "file1", "txt", 0644, 1, "Hello, World!", 13);
+    read_file(DRIVE_NAME, 2);
 
-    char *cwd = malloc(MAX_INPUT_SIZE);
-    cwd = change_directory(".");
+    // char input[MAX_INPUT_SIZE];
 
-    while(1) {
-        //Display the prompt
-        printf("\033[1;32mcli_fi %s> \033[0m", cwd);
-        fflush(stdout);
+    // char *cwd = malloc(MAX_INPUT_SIZE);
+    // cwd = change_directory(".");
 
-        // Read iinput
-        if (fgets(input, MAX_INPUT_SIZE, stdin) == NULL) {
-            printf("\n");
-            break;
-        }
+    // while(1) {
+    //     //Display the prompt
+    //     printf("\033[1;32mcli_fi %s> \033[0m", cwd);
+    //     fflush(stdout);
 
-        // Remove trailing newline
-        input[strcspn(input, "\n")] = 0;
+    //     // Read iinput
+    //     if (fgets(input, MAX_INPUT_SIZE, stdin) == NULL) {
+    //         printf("\n");
+    //         break;
+    //     }
 
-        // Skip empty input
-        if (strlen(input) == 0) {
-            continue;
-        }
+    //     // Remove trailing newline
+    //     input[strcspn(input, "\n")] = 0;
 
-        // Parse input
-        char *command = strtok(input, " ");
-        char *arg = strtok(NULL, " ");
+    //     // Skip empty input
+    //     if (strlen(input) == 0) {
+    //         continue;
+    //     }
 
-        // Execute command
-        if (strcmp(command, "ls") == 0) {
-            list_directory_cli(".");
-        }
-        else if (strcmp(command, "cd") == 0) {
-            if (arg != NULL) {
-                cwd = change_directory(arg);
-            } else {
-                printf("cd: missing argument\n");
-            }
-        }
-        else if (strcmp(command, "mkdir") == 0) {
-            if (arg != NULL) {
-                make_directory_cli(arg);
-            } else {
-                printf("mkdir: missing argument\n");
-            }
-        }
-        else if (strcmp(command, "rm") == 0) {
-            if (arg != NULL) {
-                remove_entry_cli(arg);
-            } else {
-                printf("rm: missing argument\n");
-            }
-        }
-        else if (strcmp(command, "exit") == 0) {
-            break;
-        }
-        else {
-            printf("Unknown command: %s\n", command);
-        }
-    }
+    //     // Parse input
+    //     char *command = strtok(input, " ");
+    //     char *arg = strtok(NULL, " ");
 
-    printf("Exiting CLI.\n");
-    return 0;
+    //     // Execute command
+    //     if (strcmp(command, "ls") == 0) {
+    //         list_directory_cli(".");
+    //     }
+    //     else if (strcmp(command, "cd") == 0) {
+    //         if (arg != NULL) {
+    //             cwd = change_directory(arg);
+    //         } else {
+    //             printf("cd: missing argument\n");
+    //         }
+    //     }
+    //     else if (strcmp(command, "mkdir") == 0) {
+    //         if (arg != NULL) {
+    //             make_directory_cli(arg);
+    //         } else {
+    //             printf("mkdir: missing argument\n");
+    //         }
+    //     }
+    //     else if (strcmp(command, "rm") == 0) {
+    //         if (arg != NULL) {
+    //             remove_entry_cli(arg);
+    //         } else {
+    //             printf("rm: missing argument\n");
+    //         }
+    //     }
+    //     else if (strcmp(command, "exit") == 0) {
+    //         break;
+    //     }
+    //     else {
+    //         printf("Unknown command: %s\n", command);
+    //     }
+    // }
+
+    // printf("Exiting CLI.\n");
+    // return 0;
 }
