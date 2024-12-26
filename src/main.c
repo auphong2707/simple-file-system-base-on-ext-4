@@ -720,7 +720,7 @@ directory_block_t* read_directory(FILE* disk, uint32_t inode_number) {
     fread(&itable, sizeof(inode_table), 1, disk);
 
     // 3. Validate inode number
-    if (inode_number == 0 || inode_number > INODES_COUNT) {
+    if (inode_number > INODES_COUNT) {
         fprintf(stderr, "Error: invalid inode number %u\n", inode_number);
         return NULL;
     }
@@ -778,10 +778,10 @@ void update_directory(FILE* disk,
                       group_descriptor *gd,
                       uint32_t inode_number,
                       directory_block_t *dir_block) {
-    free_all_data_blocks_of_inode(disk, inode, block_bitmap, &gd);
+    free_all_data_blocks_of_inode(disk, inode, block_bitmap, gd);
     uint32_t needed_blocks = (sizeof(directory_block_t) + dir_block->entries_count * sizeof(dir_entry_t) + BLOCK_SIZE - 1) / BLOCK_SIZE;
     for (size_t i = 0; i < needed_blocks; i++) {
-        int allocated_block = allocate_data_block_for_inode(disk, inode, i, block_bitmap, &gd);
+        int allocated_block = allocate_data_block_for_inode(disk, inode, i, block_bitmap, gd);
         if (allocated_block < 0) {
             fprintf(stderr, "Error: could not allocate data block for parent directory.\n");
             free(dir_block);
@@ -981,13 +981,34 @@ cleanup:
 }
 
 
-// Create a directory on the drive:
-// 1. Opens the drive file in read/write mode.
-// 2. Reads Group Descriptor, Block Bitmap, and Inode Bitmap, Inode Table.
-// 3. Finds a free block and marks it allocated
-// 4. Allocates a new inode for the directory, sets its first block
-// 5. Initializes a 'directory' structure on that block
-// 6. Updates the Group Descriptor and writes it all back to disk.
+/**
+ * @brief Creates a new directory in the file system.
+ *
+ * This function creates a new directory with the specified name, permissions, 
+ * and parent inode number in the file system represented by the given disk file.
+ *
+ * @param disk The file pointer to the disk image.
+ * @param dir_name The name of the new directory to be created.
+ * @param permissions The permissions for the new directory.
+ * @param parent_inode_number The inode number of the parent directory.
+ *
+ * The function performs the following steps:
+ * 1. Reads necessary structures from the disk, including the group descriptor, 
+ *    block bitmap, inode bitmap, and inode table.
+ * 2. Allocates necessary structures for the new directory in memory, including 
+ *    an inode and a minimal directory block.
+ * 3. Allocates the required number of blocks for the directory and writes the 
+ *    directory block to the disk.
+ * 4. Updates the parent directory block to include the new directory entry.
+ * 5. Overwrites the updated metadata structures, including the group descriptor, 
+ *    block bitmap, inode bitmap, and inode table.
+ *
+ * If any error occurs during the process, the function rolls back the changes 
+ * and frees allocated memory.
+ *
+ * @note The function assumes that the disk image is properly formatted and 
+ *       that the necessary structures are correctly initialized.
+ */
 void create_directory(FILE *disk, 
                       const char *dir_name, 
                       uint32_t permissions,
@@ -1018,11 +1039,12 @@ void create_directory(FILE *disk,
     // 2. Allocate necessary structures for the new directory in memory
     // 2a. Inode for the new directory
     inode *dir_inode = allocate_inode(&itable, inode_bitmap, &gd, 1, permissions);
-
     if (!dir_inode) {
         fprintf(stderr, "Error: cannot allocate inode for directory\n");
         goto cleanup;
     }
+    dir_inode->file_type = 1; // Set the file type to directory
+    dir_inode->permissions = permissions;
 
     // 2b. Create a minimal directory block in memory
     directory_block_t *dirblk = create_minimal_directory_block(dir_inode->inode_number, parent_inode_number);
@@ -1036,7 +1058,7 @@ void create_directory(FILE *disk,
     // 2c. Calculate the number of blocks needed for the directory
     size_t dirblk_size = sizeof(directory_block_t) + dirblk->entries_count * sizeof(dir_entry_t);
     size_t needed_blocks = (dirblk_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    dir_inode->file_size = 0;
+    dir_inode->file_size = (uint32_t)dirblk_size;
 
     // 3. Allocate each needed block
     uint8_t *src_ptr = (uint8_t *)dirblk;
@@ -1066,7 +1088,33 @@ void create_directory(FILE *disk,
     free(dirblk);
 
     // 4. Rewrite the parent directory block to include the new entry
-    // Not implemented yet
+    directory_block_t *parent_dir_block = read_directory(disk, parent_inode_number);
+    if (!parent_dir_block) {
+        fprintf(stderr, "Error: could not read parent directory block.\n");
+        // Roll back the inode
+        deallocate_inode(&itable, inode_bitmap, &gd, dir_inode->inode_number);
+        goto cleanup;
+    }
+
+    // Add the new directory entry to the parent directory block
+    if (parent_dir_block->entries_count >= BLOCK_SIZE / sizeof(dir_entry_t)) {
+        fprintf(stderr, "Error: parent directory block is full.\n");
+        // Roll back the inode
+        deallocate_inode(&itable, inode_bitmap, &gd, dir_inode->inode_number);
+        free(parent_dir_block);
+        goto cleanup;
+    }
+
+    dir_entry_t *new_entry = &parent_dir_block->entries[parent_dir_block->entries_count++];
+    new_entry->inode = dir_inode->inode_number;
+    new_entry->rec_len = sizeof(dir_entry_t);
+    new_entry->name_len = strlen(dir_name);
+    strncpy(new_entry->name, dir_name, sizeof(new_entry->name));
+    
+    // Write the updated parent directory block back to disk
+    update_directory(disk, &itable.inodes[parent_inode_number], block_bitmap, &gd, parent_inode_number, parent_dir_block);
+
+    free(parent_dir_block);
 
     // 5. Overwrite updated metadata structures
     // 5a. Group Descriptor
@@ -1090,6 +1138,7 @@ void create_directory(FILE *disk,
 cleanup:
     free(block_bitmap);
     free(inode_bitmap);
+    fseek(disk, 0, SEEK_SET);
 }
 
 void create_file(FILE *disk, 
