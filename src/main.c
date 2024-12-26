@@ -371,8 +371,20 @@ void free_all_data_blocks_of_inode(FILE *disk,
 
 
 // [MAIN FUNCTIONS]
-// Create a file with the specified size
-void create_drive_file(const char *filename, uint64_t size) {
+
+/**
+ * @brief Creates a new file with the specified size.
+ *
+ * This function creates a new file with the given filename and sets its size to the specified value.
+ * It opens the file in write-binary mode, moves the file pointer to the last byte, writes a null byte
+ * to allocate the space, and then moves the file pointer back to the beginning.
+ *
+ * @param filename The name of the file to be created.
+ * @param size The size of the file to be created in bytes.
+ * @return A pointer to the created file.
+ * @note If the file cannot be created, the function prints an error message and exits the program.
+ */
+FILE *create_drive_file(const char *filename, uint64_t size) {
     FILE *file = fopen(filename, "wb");
     if (file == NULL) {
         fprintf(stderr, "Error: Unable to create file %s\n", filename);
@@ -382,26 +394,48 @@ void create_drive_file(const char *filename, uint64_t size) {
     fseek(file, size - 1, SEEK_SET); // Move the file pointer to the last byte
     fputc('\0', file); // Write a null byte
 
-    fclose(file);
+    fseek(file, 0, SEEK_SET); // Move the file pointer back to the beginning
+
+    return file;
 }
 
-// Initialize the drive with the superblock, group descriptors, and other structures:
-// 1. Super Block: 1 block
-// 2. Group Descriptor: 1 block
-// 3. Data Block Bitmap: 1 block
-// 4. Inode Bitmap: 1 block
-// 5. Inode Table: Many blocks
-// 6. Data Blocks: Remaining blocks
-void initialize_drive(const char *filename) {
-    // 1. Open the file for read/write
-    FILE *file = fopen(filename, "rb+");
-    if (file == NULL) {
-        fprintf(stderr, "Error: Unable to open file %s\n", filename);
-        exit(EXIT_FAILURE);
-    }
 
-    // 2. Build all structures in memory first
-    // superblock
+/**
+ * @brief Initializes a drive by setting up the necessary filesystem structures.
+ *
+ * This function initializes a drive by creating and writing the superblock, group descriptor,
+ * block bitmap, inode bitmap, inode table, and root directory to the disk.
+ *
+ * @param disk A pointer to the FILE object representing the disk to be initialized.
+ *
+ * The function performs the following steps:
+ * 1. Builds all necessary structures in memory:
+ *    a. Initializes the superblock with the given parameters.
+ *    b. Initializes the group descriptor with the given parameters.
+ *    c. Allocates and initializes the data block bitmap.
+ *    d. Allocates and initializes the inode bitmap.
+ *    e. Initializes the inode table.
+ * 2. Allocates the root directory:
+ *    a. Allocates the root inode with file type set to directory and permissions set to 0755.
+ *    b. Builds a minimal directory block containing '.' and '..' entries.
+ *    c. Allocates a data block for the root directory contents.
+ *    d. Updates the root inode with the allocated data block and its size.
+ * 3. Writes the initialized structures to the disk:
+ *    a. Writes the superblock to the disk.
+ *    b. Writes the group descriptor to the disk.
+ *    c. Writes the block bitmap to the disk.
+ *    d. Writes the inode bitmap to the disk.
+ *    e. Writes the inode table to the disk.
+ *    f. Writes the root directory block to the disk.
+ * 4. Cleans up the in-memory structures.
+ *
+ * If any error occurs during the initialization process, the function prints an error message,
+ * frees allocated memory, closes the disk file, and exits the program with a failure status.
+ */
+void initialize_drive(FILE *disk) {
+
+    // 1. Build all structures in memory first
+    // 1a. Superblock
     superblock sb;
     initialize_superblock(
         &sb,
@@ -417,7 +451,7 @@ void initialize_drive(const char *filename) {
         0xEF53
     );
 
-    // group descriptor
+    // 1b. Group Descriptor
     group_descriptor gd;
     initialize_descriptor_block(
         &gd,
@@ -429,30 +463,30 @@ void initialize_drive(const char *filename) {
         0  // used_dirs_count
     );
 
-    //data block bitmap (in memory)
+    // 1c. Data block bitmap
     uint8_t *data_block_bitmap = (uint8_t *) malloc(BLOCKS_COUNT / 8 + 1);
     initialize_bitmap(data_block_bitmap, BLOCKS_COUNT);
     
-    // inode bitmap (in memory)
+    // 1d. Inode bitmap
     uint8_t *inode_bitmap = (uint8_t * ) malloc(INODES_COUNT / 8);
     initialize_bitmap(inode_bitmap, INODES_COUNT);
 
-    // inode table
+    // 1e. Inode Table
     inode_table itable;
     initialize_inode_table(&itable);
 
-    // 3. Allocate the root directory
-    // Allocate the root inode (file_type=1 for directory, permissions=0755)
+    // 2. Allocate the root directory
+    // 2a. Allocate the root inode (file_type=1 for directory, permissions=0755)
     inode *root_inode = allocate_inode(&itable, inode_bitmap, &gd, 1, 0755);
     if (!root_inode) {
         fprintf(stderr, "Error: Could not allocate root directory inode. \n");
         free(data_block_bitmap);
         free(inode_bitmap);
-        fclose(file);
+        fclose(disk);
         exit(EXIT_FAILURE);
     }
 
-    // Build a minimal directory block (with '.' and '..')
+    // 2b. Build a minimal directory block (with '.' and '..')
     directory_block_t *root_dir_block = create_minimal_directory_block(
         root_inode->inode_number,   // '.' points to itself
         root_inode->inode_number    // '..' also points to ifself for root
@@ -461,60 +495,59 @@ void initialize_drive(const char *filename) {
         fprintf(stderr, "Error: Could not build root directory block.\n");
         free(data_block_bitmap);
         free(inode_bitmap);
-        fclose(file);
+        fclose(disk);
         exit(EXIT_FAILURE);
     }
     size_t root_dir_size = sizeof(directory_block_t)
                          + root_dir_block->entries_count * sizeof(dir_entry_t);
     
-    // Allocate a data block for the root directory contents
+    // 2c. Allocate a data block for the root directory contents
     int free_block_index = find_free_block(data_block_bitmap, BLOCKS_COUNT, 1);
     if (free_block_index < 0) {
         fprintf(stderr, "Error: No free data blocks for root directory.\n");
         free(root_dir_block);
         free(data_block_bitmap);
         free(inode_bitmap);
-        fclose(file);
+        fclose(disk);
         exit(EXIT_FAILURE);
     }
     set_bitmap_bit(data_block_bitmap, free_block_index);
     gd.free_blocks_count--;
 
-    // Update the root inode with this block
+    // 2d. Update the root inode with this block
     root_inode->blocks[0] = free_block_index;
     root_inode->file_size = (uint32_t)root_dir_size;
 
-    // 4. Write the blocks into the disk
-    // Super block
-    fseek(file, 0, SEEK_SET);
-    fwrite(&sb, sizeof(superblock), 1, file);
+    // 3. Write the blocks into the disk
+    // 3a. Super block
+    fseek(disk, 0, SEEK_SET);
+    fwrite(&sb, sizeof(superblock), 1, disk);
 
-    // Group Descriptor
-    fseek(file, BLOCK_SIZE, SEEK_SET);
-    fwrite(&gd, sizeof(group_descriptor), 1, file);
+    // 3b. Group Descriptor
+    fseek(disk, BLOCK_SIZE, SEEK_SET);
+    fwrite(&gd, sizeof(group_descriptor), 1, disk);
 
-    // Block Bitmap
-    fseek(file, gd.block_bitmap * BLOCK_SIZE, SEEK_SET);
-    fwrite(data_block_bitmap, BLOCKS_COUNT / 8, 1, file);
+    // 3c. Block Bitmap
+    fseek(disk, gd.block_bitmap * BLOCK_SIZE, SEEK_SET);
+    fwrite(data_block_bitmap, BLOCKS_COUNT / 8, 1, disk);
 
-    // Inode Bitmap
-    fseek(file, gd.inode_bitmap * BLOCK_SIZE, SEEK_SET);
-    fwrite(inode_bitmap, INODES_COUNT / 8, 1, file);
+    // 3d. Inode Bitmap
+    fseek(disk, gd.inode_bitmap * BLOCK_SIZE, SEEK_SET);
+    fwrite(inode_bitmap, INODES_COUNT / 8, 1, disk);
 
-    // Inode Table
-    fseek(file, gd.inode_table * BLOCK_SIZE, SEEK_SET);
-    fwrite(&itable, sizeof(itable), 1, file);
+    // 3e. Inode Table
+    fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
+    fwrite(&itable, sizeof(itable), 1, disk);
 
-    // Root Directory
-    fseek(file, (long)(free_block_index + FIRST_DATA_BLOCK) * BLOCK_SIZE, SEEK_SET);
-    fwrite(root_dir_block, root_dir_size, 1, file);
+    // 3f. Root Directory
+    fseek(disk, (long)(free_block_index + FIRST_DATA_BLOCK) * BLOCK_SIZE, SEEK_SET);
+    fwrite(root_dir_block, root_dir_size, 1, disk);
 
-    // 5. Clean up in-memory structures
+    // 4. Clean up in-memory structures
     free(root_dir_block);
     free(data_block_bitmap);
     free(inode_bitmap);
 
-    fclose(file);
     printf("Drive initialized successfully with root directory at inode #%u (block %d).\n",
            root_inode->inode_number, (int)FIRST_DATA_BLOCK + free_block_index);
 }
@@ -1135,9 +1168,9 @@ int main() {
     // Check if the drive file exists, if not, create it
     FILE *file = fopen(DRIVE_NAME, "rb");
     if (file == NULL) {
-        create_drive_file(DRIVE_NAME, BLOCK_SIZE * BLOCKS_COUNT);
+        file = create_drive_file(DRIVE_NAME, BLOCK_SIZE * BLOCKS_COUNT);
         // Initialize the drive
-        initialize_drive(DRIVE_NAME);
+        initialize_drive(file);
     } else {
         fclose(file);
     }
