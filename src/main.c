@@ -462,7 +462,7 @@ int read_inode_data(FILE *disk, inode *node, char *buffer, size_t size) {
  * @return A pointer to the created file.
  * @note If the file cannot be created, the function prints an error message and exits the program.
  */
-FILE *create_drive_file(const char *filename, uint64_t size) {
+void create_drive_file(const char *filename, uint64_t size) {
     FILE *file = fopen(filename, "wb");
     if (file == NULL) {
         fprintf(stderr, "Error: Unable to create file %s\n", filename);
@@ -474,7 +474,7 @@ FILE *create_drive_file(const char *filename, uint64_t size) {
 
     fseek(file, 0, SEEK_SET); // Move the file pointer back to the beginning
 
-    return file;
+    fclose(file);
 }
 
 
@@ -1105,16 +1105,13 @@ void create_directory(FILE *disk,
         goto cleanup;
     }
 
-    dir_entry_t *new_entry = &parent_dir_block->entries[parent_dir_block->entries_count++];
-    new_entry->inode = dir_inode->inode_number;
-    new_entry->rec_len = sizeof(dir_entry_t);
-    new_entry->name_len = strlen(dir_name);
-    strncpy(new_entry->name, dir_name, sizeof(new_entry->name));
+    directory_block_t *new_parent_dir_block = add_entry_to_directory_block(parent_dir_block, dir_inode->inode_number, dir_name, 1);
     
     // Write the updated parent directory block back to disk
     update_directory(disk, &itable.inodes[parent_inode_number], block_bitmap, &gd, parent_inode_number, parent_dir_block);
 
     free(parent_dir_block);
+    free(new_parent_dir_block);
 
     // 5. Overwrite updated metadata structures
     // 5a. Group Descriptor
@@ -1141,36 +1138,61 @@ cleanup:
     fseek(disk, 0, SEEK_SET);
 }
 
+
+/**
+ * @brief Creates a file in the specified parent directory inode.
+ *
+ * This function creates a file with the given name, extension, permissions, and data
+ * in the specified parent directory inode. It performs the following steps:
+ * 1. Reads necessary structures from the disk (group descriptor, block bitmap, inode bitmap, inode table).
+ * 2. Creates the file metadata structure and allocates an inode for the file.
+ * 3. Adds the file entry to the parent directory's directory block.
+ * 4. Allocates the necessary blocks for the file and writes the file metadata and data to the disk.
+ * 5. Updates the metadata structures on the disk.
+ *
+ * @param disk The file pointer to the disk image.
+ * @param file_name The name of the file to be created.
+ * @param extension The extension of the file to be created.
+ * @param permissions The permissions for the new file.
+ * @param data The data to be written to the new file.
+ * @param parent_inode_number The inode number of the parent directory where the file will be created.
+ */
 void create_file(FILE *disk, 
                  const char *file_name, 
                  const char *extension, 
-                 uint32_t permissions, 
-                 uint32_t parent_inode_number, 
-                 const char *data, 
-                 uint64_t file_size) {
-    // 1. Read the group descriptor
+                 uint32_t permissions,
+                 const char *data,
+                 uint32_t parent_inode_number) {
+
+    printf("Creating file '%s.%s' in parent directory inode #%u\n", file_name, extension, parent_inode_number);
+
+    // 1. Read necessary structures from disk
+    // 1a. Read the group descriptor
     group_descriptor gd;
     fseek(disk, BLOCK_SIZE, SEEK_SET);
     fread(&gd, sizeof(group_descriptor), 1, disk);
 
-    // 2. Read the block bitmap
+    // 1b. Read the block bitmap
     uint8_t *block_bitmap = (uint8_t *)malloc(BLOCKS_COUNT / 8);
     fseek(disk, gd.block_bitmap * BLOCK_SIZE, SEEK_SET);
     fread(block_bitmap, BLOCKS_COUNT / 8, 1, disk);
 
-    // 3. Read the inode bitmap
+    // 1c. Read the inode bitmap
     uint8_t *inode_bitmap = (uint8_t *)malloc(INODES_COUNT / 8);
     fseek(disk, gd.inode_bitmap * BLOCK_SIZE, SEEK_SET);
     fread(inode_bitmap, INODES_COUNT / 8, 1, disk);
 
-    // 4. Read the inode table
+    // 1d. Read the inode table
     inode_table itable;
     fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
     fread(&itable, sizeof(inode_table), 1, disk);
 
-    // 5. Create the file_t structure
-    size_t data_size = sizeof(file_t) + strlen(data);
-    file_t *file_data = (file_t *)malloc(data_size);
+    printf("Finished step 1: reading structures from disk.\n");
+
+    // 2. Create the file_t structure
+    // 2a. Initialize the file_t structure
+    size_t file_size = sizeof(file_t) + strlen(data);
+    file_t *file_data = (file_t *)malloc(file_size);
     if (!file_data) {
         fprintf(stderr, "Error: could not allocate memory for file metadata\n");
         goto cleanup;
@@ -1179,11 +1201,8 @@ void create_file(FILE *disk,
     // Initialize the file_t structure
     strncpy(file_data->name, file_name, sizeof(file_data->name) - 1);
     strncpy(file_data->extension, extension, sizeof(file_data->extension) - 1);
-    file_data->type = 0; // Regular file
-    file_data->size = strlen(data);
-
-    // Calculate the number of blocks needed for the entire file metadata + data
-    size_t needed_blocks = (data_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    file_data->size = file_size;
+    memcpy(file_data->data, data, strlen(data));
 
     // Allocate a new file inode
     inode *file_inode = allocate_inode(&itable, inode_bitmap, &gd, 0, permissions);
@@ -1192,64 +1211,53 @@ void create_file(FILE *disk,
         free(file_data);
         goto cleanup;
     }
-    printf("Allocated inode #%u for file '%s'\n", file_inode->inode_number, file_name);
-
     file_data->inode = file_inode->inode_number;
 
-    // Write the file metadata and data to the disk
-    memcpy(file_data->data, data, strlen(data));
+    // 2b. Set the inode
+    file_inode->file_size = (uint32_t)file_size;
+    file_inode->file_type = 0; // Regular file
+    file_inode->permissions = permissions;
 
-    // Set the inode file size
-    file_inode->file_size = (uint32_t)data_size;
+    // 2c. Calculate the number of blocks needed for the file
+    size_t needed_blocks = (file_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-    // Add file to the parent directory's directory block
-    // Step 1: Locate the parent directory inode
-    inode *parent_inode = &itable.inodes[parent_inode_number - 1];
-    if (!parent_inode || parent_inode->file_type != 1) {
-        fprintf(stderr, "Error: invalid parent directory inode\n");
+    printf("Finished step 2: created file metadata and allocated inode.\n");
+
+    // 3. Add file to the parent directory's directory block
+    // 3a. Read the parent directory block
+    directory_block_t *parent_dir_block = read_directory(disk, parent_inode_number);
+    if (!parent_dir_block) {
+        fprintf(stderr, "Error: could not read parent directory block.\n");
+        // Roll back the inode
+        deallocate_inode(&itable, inode_bitmap, &gd, file_inode->inode_number);
         free(file_data);
         goto cleanup;
     }
 
-    // Step 2: Load the directory block from the parent directory
-    uint32_t dir_block_index = parent_inode->blocks[0]; // Assuming only one block for simplicity
-    if (dir_block_index == 0) {
-        fprintf(stderr, "Error: parent directory has no data blocks\n");
+    // 3b. Add the new file entry to the parent directory block
+    if (parent_dir_block->entries_count >= BLOCK_SIZE / sizeof(dir_entry_t)) {
+        fprintf(stderr, "Error: parent directory block is full.\n");
+        // Roll back the inode
+        deallocate_inode(&itable, inode_bitmap, &gd, file_inode->inode_number);
         free(file_data);
+        free(parent_dir_block);
         goto cleanup;
     }
 
-    directory_block_t *dir_block = (directory_block_t *)malloc(BLOCK_SIZE);
-    if (!dir_block) {
-        fprintf(stderr, "Error: could not allocate memory for directory block\n");
-        free(file_data);
-        goto cleanup;
-    }
+    char full_name[256];
+    snprintf(full_name, sizeof(full_name), "%s.%s", file_name, extension);
+    directory_block_t *new_parent_dir_block = add_entry_to_directory_block(parent_dir_block, file_inode->inode_number, full_name, 0);
+    
+    // 3c. Write the updated parent directory block back to disk
+    update_directory(disk, &itable.inodes[parent_inode_number], block_bitmap, &gd, parent_inode_number, new_parent_dir_block);
 
-    fseek(disk, (FIRST_DATA_BLOCK + dir_block_index) * BLOCK_SIZE, SEEK_SET);
-    fread(dir_block, BLOCK_SIZE, 1, disk);
+    // 3d. Clean up the parent directory block
+    free(parent_dir_block);
+    free(new_parent_dir_block);
 
-    // Step 3: Add new directory entry
-    if (dir_block->entries_count >= BLOCK_SIZE / sizeof(dir_entry_t)) {
-        fprintf(stderr, "Error: directory block is full\n");
-        free(file_data);
-        free(dir_block);
-        goto cleanup;
-    }
+    printf("Finished step 3: added file entry to parent directory.\n");
 
-    dir_entry_t *new_entry = &dir_block->entries[dir_block->entries_count++];
-    new_entry->inode = file_inode->inode_number;
-    new_entry->rec_len = sizeof(dir_entry_t);
-    new_entry->name_len = strlen(file_name);
-    new_entry->file_type = 0; // Regular file
-    strncpy(new_entry->name, file_name, MAX_FILENAME_LEN);
-
-    // Step 4: Write the updated directory block back to disk
-    fseek(disk, (FIRST_DATA_BLOCK + dir_block_index) * BLOCK_SIZE, SEEK_SET);
-    fwrite(dir_block, BLOCK_SIZE, 1, disk);
-
-    free(dir_block);
-    // 6. Allocate each needed block and write the file metadata/data
+    // 4. Allocate each needed block and write the file metadata/data
     uint8_t *src_ptr = (uint8_t *)file_data;
     size_t bytes_written = 0;
     for (size_t i = 0; i < needed_blocks; i++) {
@@ -1265,7 +1273,7 @@ void create_file(FILE *disk,
 
         // Write the slice of the file_metadata that fits in this block
         size_t offset = i * BLOCK_SIZE;
-        size_t bytes_left = data_size - offset;
+        size_t bytes_left = file_size - offset;
         size_t to_write = (bytes_left > BLOCK_SIZE) ? BLOCK_SIZE : bytes_left;
 
         fseek(disk, (FIRST_DATA_BLOCK + allocated_block) * BLOCK_SIZE, SEEK_SET);
@@ -1276,30 +1284,35 @@ void create_file(FILE *disk,
 
     free(file_data);
 
-    // 7. Overwrite updated metadata structures
-    // Group Descriptor
+    printf("Finished step 4: allocated blocks and wrote file metadata/data.\n");
+
+    // 5. Overwrite updated metadata structures
+    // 5a. Group Descriptor
     fseek(disk, BLOCK_SIZE, SEEK_SET);
     fwrite(&gd, sizeof(gd), 1, disk);
 
-    // Block Bitmap
+    // 5b. Block Bitmap
     fseek(disk, gd.block_bitmap * BLOCK_SIZE, SEEK_SET);
     fwrite(block_bitmap, BLOCKS_COUNT / 8, 1, disk);
 
-    // Inode Bitmap
+    // 5c. Inode Bitmap
     fseek(disk, gd.inode_bitmap * BLOCK_SIZE, SEEK_SET);
     fwrite(inode_bitmap, INODES_COUNT / 8, 1, disk);
 
-    // Inode Table
+    // 5d. Inode Table
     fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
     fwrite(&itable, sizeof(itable), 1, disk);
 
-    printf("File '%s' created (inode #%u). Size=%llu bytes.\n", file_name, file_inode->inode_number, file_size);
+    printf("Finished step 5: updated metadata structures.\n");
+
+    printf("File '%s.%s' created (inode #%u). Size=%lu bytes.\n", file_name, extension, file_inode->inode_number, file_size);
 
 cleanup:
     free(block_bitmap);
     free(inode_bitmap);
     fseek(disk, 0, SEEK_SET);
 }
+
 
 void delete_file(const char *filename, uint32_t inode_number, uint32_t parent_inode_number) {
     FILE *disk = fopen(filename, "rb+");
@@ -1439,24 +1452,24 @@ void remove_entry_cli(const char *path) {
 
 int main() {
     // Check if the drive file exists, if not, create it
-    FILE *disk = fopen(DRIVE_NAME, "rb");
+    FILE *disk = fopen(DRIVE_NAME, "rb+");
     if (disk == NULL) {
-        disk = create_drive_file(DRIVE_NAME, BLOCK_SIZE * BLOCKS_COUNT);
+        create_drive_file(DRIVE_NAME, BLOCK_SIZE * BLOCKS_COUNT);
+        disk = fopen(DRIVE_NAME, "rb+");
+
         // Initialize the drive
         initialize_drive(disk);
     }
 
-    create_file(disk, "file1", "txt", 0644, 1, "Hello, World!", 13);
+    create_file(disk, "test", "txt", 0644, "Hello, World!", 0);
     file_t* file = read_file(disk, 1);
 
     if (file != NULL) {
         printf("File Name: %s\n", file->name);
         printf("File Extension: %s\n", file->extension);
-        printf("File Type: %s\n", file->type == 0 ? "Regular File" : "Directory");
-        printf("File Size: %u bytes\n", file->size);
+        printf("File Size: %lu bytes\n", (uint64_t)file->size);
         printf("File Inode: %u\n", file->inode);
         printf("File Data: %s\n", file->data);
-        free(file);
     } else {
         printf("Error: Could not read file.\n");
     }

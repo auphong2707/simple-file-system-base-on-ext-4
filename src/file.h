@@ -10,7 +10,6 @@
 typedef struct {
     char name[256];      // File name
     char extension[16];  // File extension
-    uint8_t type;        // File type (e.g., 0 = regular file, 1 = directory)
     uint64_t size;       // File size in bytes
     uint32_t inode;      // Inode number
     char data[];         // Flexible array for variable-sized data
@@ -72,6 +71,32 @@ directory_block_t* create_minimal_directory_block(uint32_t self_inode, uint32_t 
     strcpy(dirblk->entries[1].name, "..");
 
     return dirblk;
+}
+
+directory_block_t *add_entry_to_directory_block(directory_block_t *dirblk, uint32_t inode, const char *name, uint8_t file_type) {
+    // Initialize the new directory block
+    size_t new_size = sizeof(directory_block_t) + (dirblk->entries_count + 1) * sizeof(dir_entry_t);
+
+    directory_block_t *new_dirblk = (directory_block_t *)malloc(new_size);
+    if (!new_dirblk) {
+        return NULL;
+    }
+
+    // Copy the existing entries
+    memcpy(new_dirblk, dirblk, sizeof(directory_block_t) + dirblk->entries_count * sizeof(dir_entry_t));
+
+    // Add the new entry
+    dir_entry_t *new_entry = &new_dirblk->entries[dirblk->entries_count];
+    new_entry->inode = inode;
+    new_entry->rec_len = sizeof(dir_entry_t);
+    new_entry->name_len = (uint8_t)strlen(name);
+    new_entry->file_type = file_type;
+    strncpy(new_entry->name, name, MAX_FILENAME_LEN);
+
+    // Update the entries count
+    new_dirblk->entries_count++;
+
+    return new_dirblk;
 }
 
 #endif // FILE_H
