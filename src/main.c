@@ -365,6 +365,84 @@ void free_all_data_blocks_of_inode(FILE *disk,
     }
 }
 
+/**
+ * Reads data from an inode into a buffer.
+ *
+ * This function reads the data blocks associated with an inode from a disk
+ * image file and stores the data in the provided buffer. It handles direct,
+ * single-indirect, and double-indirect blocks.
+ *
+ * @param disk A pointer to the FILE object representing the disk image.
+ * @param node A pointer to the inode structure containing block information.
+ * @param buffer A pointer to the buffer where the read data will be stored.
+ * @param size The maximum number of bytes to read into the buffer.
+ * @return The number of bytes read into the buffer.
+ */
+int read_inode_data(FILE *disk, inode *node, char *buffer, size_t size) {
+    size_t bytes_read = 0;
+
+    // 1. Read direct blocks
+    for (int i = 0; i < 12; i++) {
+        if (node->blocks[i] == 0) break;
+
+        size_t to_read = (size - bytes_read) > BLOCK_SIZE ? BLOCK_SIZE : (size - bytes_read);
+
+        fseek(disk, (FIRST_DATA_BLOCK + node->blocks[i]) * BLOCK_SIZE, SEEK_SET);
+        fread(buffer + bytes_read, to_read, 1, disk);
+
+        bytes_read += to_read;
+        if (bytes_read >= size) break;
+    }
+
+    // 2. Read single-indirect blocks
+    if (node->single_indirect != 0 && bytes_read < size) {
+        uint32_t single_indirect_blocks[BLOCK_SIZE / sizeof(uint32_t)];
+        fseek(disk, (FIRST_DATA_BLOCK + node->single_indirect) * BLOCK_SIZE, SEEK_SET);
+        fread(single_indirect_blocks, BLOCK_SIZE, 1, disk);
+
+        for (int i = 0; i < BLOCK_SIZE / sizeof(uint32_t); i++) {
+            if (single_indirect_blocks[i] == 0) break;
+
+            size_t to_read = (size - bytes_read) > BLOCK_SIZE ? BLOCK_SIZE : (size - bytes_read);
+
+            fseek(disk, (FIRST_DATA_BLOCK + single_indirect_blocks[i]) * BLOCK_SIZE, SEEK_SET);
+            fread(buffer + bytes_read, to_read, 1, disk);
+
+            bytes_read += to_read;
+            if (bytes_read >= size) break;
+        }
+    }
+
+    // 6. Read double-indirect blocks
+    if (node->double_indirect != 0 && bytes_read < size) {
+        uint32_t double_indirect_blocks[BLOCK_SIZE / sizeof(uint32_t)];
+        fseek(disk, (FIRST_DATA_BLOCK + node->double_indirect) * BLOCK_SIZE, SEEK_SET);
+        fread(double_indirect_blocks, BLOCK_SIZE, 1, disk);
+
+        for (int i = 0; i < BLOCK_SIZE / sizeof(uint32_t); i++) {
+            if (double_indirect_blocks[i] == 0) break;
+
+            uint32_t single_indirect_blocks[BLOCK_SIZE / sizeof(uint32_t)];
+            fseek(disk, (FIRST_DATA_BLOCK + double_indirect_blocks[i]) * BLOCK_SIZE, SEEK_SET);
+            fread(single_indirect_blocks, BLOCK_SIZE, 1, disk);
+
+            for (int j = 0; j < BLOCK_SIZE / sizeof(uint32_t); j++) {
+                if (single_indirect_blocks[j] == 0) break;
+
+                size_t to_read = (size - bytes_read) > BLOCK_SIZE ? BLOCK_SIZE : (size - bytes_read);
+
+                fseek(disk, (FIRST_DATA_BLOCK + single_indirect_blocks[j]) * BLOCK_SIZE, SEEK_SET);
+                fread(buffer + bytes_read, to_read, 1, disk);
+
+                bytes_read += to_read;
+                if (bytes_read >= size) break;
+            }
+
+            if (bytes_read >= size) break;
+        }
+    }
+}
+
 // [END OF HELPER FUNCTIONS]
 
 
@@ -482,7 +560,6 @@ void initialize_drive(FILE *disk) {
         fprintf(stderr, "Error: Could not allocate root directory inode. \n");
         free(data_block_bitmap);
         free(inode_bitmap);
-        fclose(disk);
         exit(EXIT_FAILURE);
     }
 
@@ -495,7 +572,6 @@ void initialize_drive(FILE *disk) {
         fprintf(stderr, "Error: Could not build root directory block.\n");
         free(data_block_bitmap);
         free(inode_bitmap);
-        fclose(disk);
         exit(EXIT_FAILURE);
     }
     size_t root_dir_size = sizeof(directory_block_t)
@@ -508,7 +584,6 @@ void initialize_drive(FILE *disk) {
         free(root_dir_block);
         free(data_block_bitmap);
         free(inode_bitmap);
-        fclose(disk);
         exit(EXIT_FAILURE);
     }
     set_bitmap_bit(data_block_bitmap, free_block_index);
@@ -547,9 +622,59 @@ void initialize_drive(FILE *disk) {
     free(root_dir_block);
     free(data_block_bitmap);
     free(inode_bitmap);
+    fseek(disk, 0, SEEK_SET);
 
     printf("Drive initialized successfully with root directory at inode #%u (block %d).\n",
            root_inode->inode_number, (int)FIRST_DATA_BLOCK + free_block_index);
+}
+
+file_t* read_file(FILE* disk, uint32_t inode_number) {
+
+    // 1. Read the group descriptor
+    group_descriptor gd;
+    fseek(disk, BLOCK_SIZE, SEEK_SET);
+    fread(&gd, sizeof(group_descriptor), 1, disk);
+
+    // 2. Read the inode table
+    inode_table itable;
+    fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
+    fread(&itable, sizeof(inode_table), 1, disk);
+
+    // 3. Validate inode number
+    if (inode_number == 0 || inode_number > INODES_COUNT) {
+        fprintf(stderr, "Error: invalid inode number %u\n", inode_number);
+        return NULL;
+    }
+
+    inode *file_inode = &itable.inodes[inode_number];
+
+    for (int i = 0; i < 12; i++) {
+        printf("%u ", file_inode->blocks[i]);
+    }
+    printf("\nSingle Indirect Block: %u\n", file_inode->single_indirect);
+    printf("Double Indirect Block: %u\n", file_inode->double_indirect);
+
+    // Check if the inode is allocated
+    if (file_inode->file_size == 0) {
+        fprintf(stderr, "Error: inode #%u is not allocated or is empty.\n", inode_number);
+        return NULL;
+    }
+
+    // Allocate memory to reconstruct the file_t structure
+    size_t file_size = file_inode->file_size;
+    file_t *file_data = (file_t *)malloc(file_size);
+    if (!file_data) {
+        fprintf(stderr, "Error: could not allocate memory to read file.\n");
+        return NULL;
+    }
+
+    if (read_inode_data(disk, file_inode, (char*) file_data, file_size) != 0) {
+        fprintf(stderr, "Error: could not read file data.\n");
+        free(file_data);
+        return NULL;
+    }
+
+    return file_data;
 }
 
 // Create a directory on the drive:
@@ -661,7 +786,6 @@ void create_directory(FILE *disk,
 cleanup:
     free(block_bitmap);
     free(inode_bitmap);
-    fclose(disk);
 }
 
 void delete_directory(const char *filename, uint32_t dir_inode_number) {
@@ -743,22 +867,15 @@ void delete_directory(const char *filename, uint32_t dir_inode_number) {
 cleanup:
     free(block_bitmap);
     free(inode_bitmap);
-    fclose(disk);
 }
 
-void create_file(const char *filename, 
+void create_file(FILE *disk, 
                  const char *file_name, 
                  const char *extension, 
                  uint32_t permissions, 
                  uint32_t parent_inode_number, 
                  const char *data, 
                  uint64_t file_size) {
-    FILE *disk = fopen(filename, "rb+");
-    if (!disk) {
-        fprintf(stderr, "Error: cannot open file %s\n", filename);
-        return;
-    }
-
     // 1. Read the group descriptor
     group_descriptor gd;
     fseek(disk, BLOCK_SIZE, SEEK_SET);
@@ -909,7 +1026,7 @@ void create_file(const char *filename,
 cleanup:
     free(block_bitmap);
     free(inode_bitmap);
-    fclose(disk);
+    fseek(disk, 0, SEEK_SET);
 }
 
 void delete_file(const char *filename, uint32_t inode_number, uint32_t parent_inode_number) {
@@ -1019,123 +1136,6 @@ directory_cleanup:
 cleanup:
     free(block_bitmap);
     free(inode_bitmap);
-    fclose(disk);
-}
-
-void read_file(const char *filename, uint32_t inode_number) {
-    FILE *disk = fopen(filename, "rb");
-    if (!disk) {
-        fprintf(stderr, "Error: cannot open file %s\n", filename);
-        return;
-    }
-
-    // 1. Read the group descriptor
-    group_descriptor gd;
-    fseek(disk, BLOCK_SIZE, SEEK_SET);
-    fread(&gd, sizeof(group_descriptor), 1, disk);
-
-    // 2. Read the inode table
-    inode_table itable;
-    fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
-    fread(&itable, sizeof(inode_table), 1, disk);
-
-    // 3. Validate inode number
-    if (inode_number == 0 || inode_number > INODES_COUNT) {
-        fprintf(stderr, "Error: invalid inode number %u\n", inode_number);
-        fclose(disk);
-        return;
-    }
-
-    inode *file_inode = &itable.inodes[inode_number];
-
-    // Check if the inode is allocated
-    if (file_inode->file_size == 0) {
-        fprintf(stderr, "Error: inode #%u is not allocated or is empty.\n", inode_number);
-        fclose(disk);
-        return;
-    }
-
-    // Allocate memory to reconstruct the file_t structure
-    size_t metadata_size = file_inode->file_size;
-    file_t *file_data = (file_t *)malloc(metadata_size);
-    if (!file_data) {
-        fprintf(stderr, "Error: could not allocate memory to read file.\n");
-        fclose(disk);
-        return;
-    }
-
-    size_t bytes_read = 0;
-
-    // 4. Read direct blocks
-    for (int i = 0; i < 12; i++) {
-        if (file_inode->blocks[i] == 0) break;
-
-        size_t to_read = (metadata_size - bytes_read) > BLOCK_SIZE ? BLOCK_SIZE : (metadata_size - bytes_read);
-
-        fseek(disk, (FIRST_DATA_BLOCK + file_inode->blocks[i]) * BLOCK_SIZE, SEEK_SET);
-        fread((char *)file_data + bytes_read, to_read, 1, disk);
-
-        bytes_read += to_read;
-        if (bytes_read >= metadata_size) break;
-    }
-
-    // 5. Read single-indirect blocks
-    if (file_inode->single_indirect != 0 && bytes_read < metadata_size) {
-        uint32_t single_indirect_blocks[BLOCK_SIZE / sizeof(uint32_t)];
-        fseek(disk, (FIRST_DATA_BLOCK + file_inode->single_indirect) * BLOCK_SIZE, SEEK_SET);
-        fread(single_indirect_blocks, BLOCK_SIZE, 1, disk);
-
-        for (int i = 0; i < BLOCK_SIZE / sizeof(uint32_t); i++) {
-            if (single_indirect_blocks[i] == 0) break;
-
-            size_t to_read = (metadata_size - bytes_read) > BLOCK_SIZE ? BLOCK_SIZE : (metadata_size - bytes_read);
-
-            fseek(disk, (FIRST_DATA_BLOCK + single_indirect_blocks[i]) * BLOCK_SIZE, SEEK_SET);
-            fread((char *)file_data + bytes_read, to_read, 1, disk);
-
-            bytes_read += to_read;
-            if (bytes_read >= metadata_size) break;
-        }
-    }
-
-    // 6. Read double-indirect blocks
-    if (file_inode->double_indirect != 0 && bytes_read < metadata_size) {
-        uint32_t double_indirect_blocks[BLOCK_SIZE / sizeof(uint32_t)];
-        fseek(disk, (FIRST_DATA_BLOCK + file_inode->double_indirect) * BLOCK_SIZE, SEEK_SET);
-        fread(double_indirect_blocks, BLOCK_SIZE, 1, disk);
-
-        for (int i = 0; i < BLOCK_SIZE / sizeof(uint32_t); i++) {
-            if (double_indirect_blocks[i] == 0) break;
-
-            uint32_t single_indirect_blocks[BLOCK_SIZE / sizeof(uint32_t)];
-            fseek(disk, (FIRST_DATA_BLOCK + double_indirect_blocks[i]) * BLOCK_SIZE, SEEK_SET);
-            fread(single_indirect_blocks, BLOCK_SIZE, 1, disk);
-
-            for (int j = 0; j < BLOCK_SIZE / sizeof(uint32_t); j++) {
-                if (single_indirect_blocks[j] == 0) break;
-
-                size_t to_read = (metadata_size - bytes_read) > BLOCK_SIZE ? BLOCK_SIZE : (metadata_size - bytes_read);
-
-                fseek(disk, (FIRST_DATA_BLOCK + single_indirect_blocks[j]) * BLOCK_SIZE, SEEK_SET);
-                fread((char *)file_data + bytes_read, to_read, 1, disk);
-
-                bytes_read += to_read;
-                if (bytes_read >= metadata_size) break;
-            }
-
-            if (bytes_read >= metadata_size) break;
-        }
-    }
-
-    // Print the reconstructed file_t structure
-    printf("File name: %s\n", file_data->name);
-    printf("File extension: %s\n", file_data->extension);
-    printf("File type: %u\n", file_data->type);
-    printf("File size: %llu\n", (unsigned long long)file_data->size);
-    printf("File content: %.*s\n", (int)file_data->size, file_data->data);
-
-    free(file_data);
-    fclose(disk);
 }
 
 
@@ -1167,17 +1167,27 @@ void remove_entry_cli(const char *path) {
 
 int main() {
     // Check if the drive file exists, if not, create it
-    FILE *file = fopen(DRIVE_NAME, "rb");
-    if (file == NULL) {
-        file = create_drive_file(DRIVE_NAME, BLOCK_SIZE * BLOCKS_COUNT);
+    FILE *disk = fopen(DRIVE_NAME, "rb");
+    if (disk == NULL) {
+        disk = create_drive_file(DRIVE_NAME, BLOCK_SIZE * BLOCKS_COUNT);
         // Initialize the drive
-        initialize_drive(file);
-    } else {
-        fclose(file);
+        initialize_drive(disk);
     }
 
-    create_file(DRIVE_NAME, "file1", "txt", 0644, 1, "Hello, World!", 13);
-    read_file(DRIVE_NAME, 1);
+    create_file(disk, "file1", "txt", 0644, 1, "Hello, World!", 13);
+    file_t* file = read_file(disk, 1);
+
+    if (file != NULL) {
+        printf("File Name: %s\n", file->name);
+        printf("File Extension: %s\n", file->extension);
+        printf("File Type: %s\n", file->type == 0 ? "Regular File" : "Directory");
+        printf("File Size: %u bytes\n", file->size);
+        printf("File Inode: %u\n", file->inode);
+        printf("File Data: %s\n", file->data);
+        free(file);
+    } else {
+        printf("Error: Could not read file.\n");
+    }
 
     // char input[MAX_INPUT_SIZE];
 
@@ -1242,4 +1252,8 @@ int main() {
 
     // printf("Exiting CLI.\n");
     // return 0;
+
+    fclose(disk);
+
+    return 0;
 }
