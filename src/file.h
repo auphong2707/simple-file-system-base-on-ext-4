@@ -99,4 +99,39 @@ directory_block_t *add_entry_to_directory_block(directory_block_t *dirblk, uint3
     return new_dirblk;
 }
 
+directory_block_t *remove_entry_from_directory_block(directory_block_t *dirblk, uint32_t inode) {
+    // Find the entry to remove
+    size_t i;
+    for (i = 0; i < dirblk->entries_count; i++) {
+        if (dirblk->entries[i].inode == inode) {
+            break;
+        }
+    }
+
+    // If the entry was not found
+    if (i == dirblk->entries_count) {
+        return NULL;
+    }
+
+    // Calculate the new size
+    size_t new_size = sizeof(directory_block_t) + (dirblk->entries_count - 1) * sizeof(dir_entry_t);
+
+    // Allocate the new directory block
+    directory_block_t *new_dirblk = (directory_block_t *)malloc(new_size);
+    if (!new_dirblk) {
+        return NULL;
+    }
+
+    // Copy the entries before the one to remove
+    memcpy(new_dirblk, dirblk, i * sizeof(dir_entry_t));
+
+    // Copy the entries after the one to remove
+    memcpy(new_dirblk + i, dirblk + i + 1, (dirblk->entries_count - i - 1) * sizeof(dir_entry_t));
+
+    // Update the entries count
+    new_dirblk->entries_count = dirblk->entries_count - 1;
+
+    return new_dirblk;
+}
+
 #endif // FILE_H

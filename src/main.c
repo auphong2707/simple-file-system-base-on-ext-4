@@ -931,29 +931,12 @@ void delete_directory(FILE *disk, uint32_t dir_inode_number, uint32_t parent_ino
         goto cleanup;
     }
 
-    // Find the entry in the parent directory block
-    int entry_index = -1;
-    for (size_t i = 0; i < parent_dir_block->entries_count; i++) {
-        if (parent_dir_block->entries[i].inode == dir_inode_number) {
-            entry_index = i;
-            break;
-        }
-    }
-
-    if (entry_index == -1) {
-        fprintf(stderr, "Error: entry for inode #%u not found in parent directory.\n", dir_inode_number);
-        free(parent_dir_block);
-        goto cleanup;
-    }
-
-    // Remove the entry from the parent directory block
-    for (size_t i = entry_index; i < parent_dir_block->entries_count - 1; i++) {
-        parent_dir_block->entries[i] = parent_dir_block->entries[i + 1];
-    }
-    parent_dir_block->entries_count--;
-
     // Write the updated parent directory block back to disk
-    update_directory(disk, &itable.inodes[parent_inode_number], block_bitmap, &gd, parent_inode_number, parent_dir_block);
+    directory_block_t *new_parent_dir_block = remove_entry_from_directory_block(parent_dir_block, dir_inode_number);
+    update_directory(disk, &itable.inodes[parent_inode_number], block_bitmap, &gd, parent_inode_number, new_parent_dir_block);
+
+    free(parent_dir_block);
+    free(new_parent_dir_block);
 
     // 5. Write everything back
     // 5a. Group Descriptor
@@ -1314,105 +1297,92 @@ cleanup:
 }
 
 
-void delete_file(const char *filename, uint32_t inode_number, uint32_t parent_inode_number) {
-    FILE *disk = fopen(filename, "rb+");
-    if (!disk) {
-        fprintf(stderr, "Error: cannot open file %s\n", filename);
-        return;
-    }
-
-    // 1. Read the group descriptor
+/**
+ * @brief Deletes a file from the file system.
+ *
+ * This function deletes a file by its inode number and updates the parent directory.
+ * It performs the following steps:
+ * 1. Reads necessary structures from the disk, including the group descriptor, block bitmap, inode bitmap, and inode table.
+ * 2. Validates the inode number to ensure it is within a valid range and allocated.
+ * 3. Frees all data blocks used by the file and deallocates the inode.
+ * 4. Removes the file entry from the parent directory and updates the parent directory block on the disk.
+ * 5. Writes the updated metadata back to the disk, including the group descriptor, block bitmap, inode bitmap, and inode table.
+ *
+ * @param disk A pointer to the file representing the disk.
+ * @param inode_number The inode number of the file to be deleted.
+ * @param parent_inode_number The inode number of the parent directory.
+ */
+void delete_file(FILE *disk, uint32_t inode_number, uint32_t parent_inode_number) {
+    // 1. Read necessary structures from disk
+    // 1a. Read the group descriptor
     group_descriptor gd;
     fseek(disk, BLOCK_SIZE, SEEK_SET);
     fread(&gd, sizeof(group_descriptor), 1, disk);
 
-    // 2. Read the block bitmap
+    // 1b. Read the block bitmap
     uint8_t *block_bitmap = (uint8_t *)malloc(BLOCKS_COUNT / 8);
     fseek(disk, gd.block_bitmap * BLOCK_SIZE, SEEK_SET);
     fread(block_bitmap, BLOCKS_COUNT / 8, 1, disk);
 
-    // 3. Read the inode bitmap
+    // 1c. Read the inode bitmap
     uint8_t *inode_bitmap = (uint8_t *)malloc(INODES_COUNT / 8);
     fseek(disk, gd.inode_bitmap * BLOCK_SIZE, SEEK_SET);
     fread(inode_bitmap, INODES_COUNT / 8, 1, disk);
 
-    // 4. Read the inode table
+    // 1d. Read the inode table
     inode_table itable;
     fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
     fread(&itable, sizeof(inode_table), 1, disk);
 
-    // 5. Validate inode number
+
+    // 2. Validate inode number
     if (inode_number == 0 || inode_number > INODES_COUNT) {
         fprintf(stderr, "Error: invalid inode number %u\n", inode_number);
         goto cleanup;
     }
 
-    inode *file_inode = &itable.inodes[inode_number - 1];
+    inode *file_inode = &itable.inodes[inode_number];
 
     // Check if the inode is allocated
-    if (is_bit_free(inode_bitmap, inode_number - 1)) {
+    if (is_bit_free(inode_bitmap, inode_number)) {
         fprintf(stderr, "Error: inode #%u is not allocated.\n", inode_number);
         goto cleanup;
     }
 
-    // Free all data blocks used by the file
+    // 3. Free all data blocks used by the file and deallocate the inode
     free_all_data_blocks_of_inode(disk, file_inode, block_bitmap, &gd);
-
-    // Deallocate the inode
     deallocate_inode(&itable, inode_bitmap, &gd, inode_number);
 
-    // Remove the file entry from the parent directory
-    inode *parent_inode = &itable.inodes[parent_inode_number - 1];
-    if (!parent_inode || parent_inode->file_type != 1) {
-        fprintf(stderr, "Error: invalid parent directory inode\n");
+    // 4. Remove the file entry from the parent directory
+    // 4a. Read the parent directory block
+    directory_block_t *parent_dir_block = read_directory(disk, parent_inode_number);
+    if (!parent_dir_block) {
+        fprintf(stderr, "Error: could not read parent directory block.\n");
         goto cleanup;
     }
 
-    for (int i = 0; i < 12; i++) { // Process Direct Blocks
-        uint32_t dir_block_index = parent_inode->blocks[i];
-        if (dir_block_index == 0) break;
+    // 4b. Write the updated parent directory block back to disk
+    directory_block_t *new_parent_dir_block = remove_entry_from_directory_block(parent_dir_block, inode_number);
+    update_directory(disk, &itable.inodes[parent_inode_number], block_bitmap, &gd, parent_inode_number, new_parent_dir_block);
 
-        directory_block_t *dir_block = (directory_block_t *)malloc(BLOCK_SIZE);
-        if (!dir_block) {
-            fprintf(stderr, "Error: could not allocate memory for directory block\n");
-            goto cleanup;
-        }
+    // 4c. Clean up the parent directory block
+    free(parent_dir_block);
+    free(new_parent_dir_block);
 
-        fseek(disk, (FIRST_DATA_BLOCK + dir_block_index) * BLOCK_SIZE, SEEK_SET);
-        fread(dir_block, BLOCK_SIZE, 1, disk);
-
-        for (uint32_t j = 0; j < dir_block->entries_count; j++) {
-            if (dir_block->entries[j].inode == inode_number) {
-                // Shift entries to remove the deleted file
-                for (uint32_t k = j; k < dir_block->entries_count - 1; k++) {
-                    dir_block->entries[k] = dir_block->entries[k + 1];
-                }
-                dir_block->entries_count--;
-
-                // Write back the updated directory block
-                fseek(disk, (FIRST_DATA_BLOCK + dir_block_index) * BLOCK_SIZE, SEEK_SET);
-                fwrite(dir_block, BLOCK_SIZE, 1, disk);
-                free(dir_block);
-                goto directory_cleanup;
-            }
-        }
-        free(dir_block);
-    }
-
-    fprintf(stderr, "Error: file entry not found in parent directory\n");
-    goto cleanup;
-
-directory_cleanup:
-    // Write updated metadata back to disk
+    // 5. Write updated metadata back to disk
+    // 5a. Group Descriptor
     fseek(disk, BLOCK_SIZE, SEEK_SET);
     fwrite(&gd, sizeof(gd), 1, disk);
 
+    // 5b. Block Bitmap
     fseek(disk, gd.block_bitmap * BLOCK_SIZE, SEEK_SET);
     fwrite(block_bitmap, BLOCKS_COUNT / 8, 1, disk);
 
+    // 5c. Inode Bitmap
     fseek(disk, gd.inode_bitmap * BLOCK_SIZE, SEEK_SET);
     fwrite(inode_bitmap, INODES_COUNT / 8, 1, disk);
 
+    // 5d. Inode Table
     fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
     fwrite(&itable, sizeof(itable), 1, disk);
 
