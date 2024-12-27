@@ -1414,7 +1414,7 @@ void list_directory_cli(FILE *disk, uint32_t inode_number) {
 }
 
 void read_file_cli(FILE *disk, uint32_t inode_number, char *filename) {
-    directory_block_t *dir_block = read_directory(disk, 0);
+    directory_block_t *dir_block = read_directory(disk, inode_number);
     if (!dir_block) {
         fprintf(stderr, "Error: could not read directory block.\n");
         return;
