@@ -13,7 +13,6 @@
 # define BLOCKS_COUNT 32768
 # define MAX_INODE_COUNT 1024
 # define FIRST_DATA_BLOCK (4 + INODES_COUNT * INODE_SIZE / BLOCK_SIZE + 1)
-#define MAX_INPUT_SIZE 1024
 
 // [HELPER FUNCTIONS]
 // Allocate a new inode in the inode table
@@ -116,7 +115,7 @@ int find_and_allocate_free_block(uint8_t *block_bitmap, group_descriptor *gd) {
     set_bitmap_bit(block_bitmap, free_index);
     gd->free_blocks_count--;
 
-    return free_index;
+    return FIRST_DATA_BLOCK + free_index;
 }
 
 // Read a block reference from the disk
@@ -295,7 +294,7 @@ int allocate_data_block_for_inode(
 
 // Frees(deallocates) the given block in the block bitmap.
 static void free_data_block(uint8_t *block_bitmap, group_descriptor *gd, int block_idx) {
-    free_bitmap_bit(block_bitmap, block_idx);
+    free_bitmap_bit(block_bitmap, block_idx - FIRST_DATA_BLOCK);
     gd->free_blocks_count++;
 }
 
@@ -387,7 +386,7 @@ int read_inode_data(FILE *disk, inode *node, char *buffer, size_t size) {
 
         size_t to_read = (size - bytes_read) > BLOCK_SIZE ? BLOCK_SIZE : (size - bytes_read);
 
-        fseek(disk, (FIRST_DATA_BLOCK + node->blocks[i]) * BLOCK_SIZE, SEEK_SET);
+        fseek(disk, node->blocks[i] * BLOCK_SIZE, SEEK_SET);
         fread(buffer + bytes_read, to_read, 1, disk);
 
         bytes_read += to_read;
@@ -397,7 +396,7 @@ int read_inode_data(FILE *disk, inode *node, char *buffer, size_t size) {
     // 2. Read single-indirect blocks
     if (node->single_indirect != 0 && bytes_read < size) {
         uint32_t single_indirect_blocks[BLOCK_SIZE / sizeof(uint32_t)];
-        fseek(disk, (FIRST_DATA_BLOCK + node->single_indirect) * BLOCK_SIZE, SEEK_SET);
+        fseek(disk, node->single_indirect * BLOCK_SIZE, SEEK_SET);
         fread(single_indirect_blocks, BLOCK_SIZE, 1, disk);
 
         for (int i = 0; i < BLOCK_SIZE / sizeof(uint32_t); i++) {
@@ -405,7 +404,7 @@ int read_inode_data(FILE *disk, inode *node, char *buffer, size_t size) {
 
             size_t to_read = (size - bytes_read) > BLOCK_SIZE ? BLOCK_SIZE : (size - bytes_read);
 
-            fseek(disk, (FIRST_DATA_BLOCK + single_indirect_blocks[i]) * BLOCK_SIZE, SEEK_SET);
+            fseek(disk, single_indirect_blocks[i] * BLOCK_SIZE, SEEK_SET);
             fread(buffer + bytes_read, to_read, 1, disk);
 
             bytes_read += to_read;
@@ -416,14 +415,14 @@ int read_inode_data(FILE *disk, inode *node, char *buffer, size_t size) {
     // 6. Read double-indirect blocks
     if (node->double_indirect != 0 && bytes_read < size) {
         uint32_t double_indirect_blocks[BLOCK_SIZE / sizeof(uint32_t)];
-        fseek(disk, (FIRST_DATA_BLOCK + node->double_indirect) * BLOCK_SIZE, SEEK_SET);
+        fseek(disk, node->double_indirect * BLOCK_SIZE, SEEK_SET);
         fread(double_indirect_blocks, BLOCK_SIZE, 1, disk);
 
         for (int i = 0; i < BLOCK_SIZE / sizeof(uint32_t); i++) {
             if (double_indirect_blocks[i] == 0) break;
 
             uint32_t single_indirect_blocks[BLOCK_SIZE / sizeof(uint32_t)];
-            fseek(disk, (FIRST_DATA_BLOCK + double_indirect_blocks[i]) * BLOCK_SIZE, SEEK_SET);
+            fseek(disk, double_indirect_blocks[i] * BLOCK_SIZE, SEEK_SET);
             fread(single_indirect_blocks, BLOCK_SIZE, 1, disk);
 
             for (int j = 0; j < BLOCK_SIZE / sizeof(uint32_t); j++) {
@@ -431,7 +430,7 @@ int read_inode_data(FILE *disk, inode *node, char *buffer, size_t size) {
 
                 size_t to_read = (size - bytes_read) > BLOCK_SIZE ? BLOCK_SIZE : (size - bytes_read);
 
-                fseek(disk, (FIRST_DATA_BLOCK + single_indirect_blocks[j]) * BLOCK_SIZE, SEEK_SET);
+                fseek(disk, single_indirect_blocks[j] * BLOCK_SIZE, SEEK_SET);
                 fread(buffer + bytes_read, to_read, 1, disk);
 
                 bytes_read += to_read;
@@ -574,49 +573,42 @@ void initialize_drive(FILE *disk) {
         free(inode_bitmap);
         exit(EXIT_FAILURE);
     }
-    size_t root_dir_size = sizeof(directory_block_t)
-                         + root_dir_block->entries_count * sizeof(dir_entry_t);
-    
-    // 2c. Allocate a data block for the root directory contents
-    int free_block_index = find_free_block(data_block_bitmap, BLOCKS_COUNT, 1);
-    if (free_block_index < 0) {
-        fprintf(stderr, "Error: No free data blocks for root directory.\n");
-        free(root_dir_block);
+
+    // 3. Write the blocks into the disk
+    // 3a. Root Directory
+    int root_block = allocate_data_block_for_inode(disk, root_inode, 0, data_block_bitmap, &gd);
+    if (root_block == -1) {
+        fprintf(stderr, "Error: Could not allocate data block for root directory.\n");
         free(data_block_bitmap);
         free(inode_bitmap);
         exit(EXIT_FAILURE);
     }
-    set_bitmap_bit(data_block_bitmap, free_block_index);
-    gd.free_blocks_count--;
+    size_t root_dir_size = sizeof(directory_block_t)
+                         + root_dir_block->entries_count * sizeof(dir_entry_t);
+    root_inode->file_size = root_dir_size;
+    fseek(disk, root_block * BLOCK_SIZE, SEEK_SET);
+    fwrite(root_dir_block, root_dir_size, 1, disk);
 
-    // 2d. Update the root inode with this block
-    root_inode->blocks[0] = free_block_index;
-    root_inode->file_size = (uint32_t)root_dir_size;
-
-    // 3. Write the blocks into the disk
-    // 3a. Super block
+    // 3b. Super block
     fseek(disk, 0, SEEK_SET);
     fwrite(&sb, sizeof(superblock), 1, disk);
 
-    // 3b. Group Descriptor
+    // 3c. Group Descriptor
     fseek(disk, BLOCK_SIZE, SEEK_SET);
     fwrite(&gd, sizeof(group_descriptor), 1, disk);
 
-    // 3c. Block Bitmap
+    // 3d. Block Bitmap
     fseek(disk, gd.block_bitmap * BLOCK_SIZE, SEEK_SET);
     fwrite(data_block_bitmap, BLOCKS_COUNT / 8, 1, disk);
 
-    // 3d. Inode Bitmap
+    // 3e. Inode Bitmap
     fseek(disk, gd.inode_bitmap * BLOCK_SIZE, SEEK_SET);
     fwrite(inode_bitmap, INODES_COUNT / 8, 1, disk);
 
-    // 3e. Inode Table
+    // 3f. Inode Table
     fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
     fwrite(&itable, sizeof(itable), 1, disk);
 
-    // 3f. Root Directory
-    fseek(disk, (long)(free_block_index + FIRST_DATA_BLOCK) * BLOCK_SIZE, SEEK_SET);
-    fwrite(root_dir_block, root_dir_size, 1, disk);
 
     // 4. Clean up in-memory structures
     free(root_dir_block);
@@ -625,7 +617,7 @@ void initialize_drive(FILE *disk) {
     fseek(disk, 0, SEEK_SET);
 
     printf("Drive initialized successfully with root directory at inode #%u (block %d).\n",
-           root_inode->inode_number, (int)FIRST_DATA_BLOCK + free_block_index);
+           root_inode->inode_number, root_block);
 }
 
 
@@ -714,7 +706,9 @@ directory_block_t* read_directory(FILE* disk, uint32_t inode_number) {
     fseek(disk, BLOCK_SIZE, SEEK_SET);
     fread(&gd, sizeof(group_descriptor), 1, disk);
 
+
     // 2. Read the inode table
+
     inode_table itable;
     fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
     fread(&itable, sizeof(inode_table), 1, disk);
@@ -756,7 +750,6 @@ directory_block_t* read_directory(FILE* disk, uint32_t inode_number) {
     return dir_data;
 }
 
-
 /**
  * @brief Updates a directory's data blocks on disk.
  *
@@ -773,13 +766,18 @@ directory_block_t* read_directory(FILE* disk, uint32_t inode_number) {
  * @param dir_block      Pointer to the `directory_block_t` structure containing the updated directory entries.
  */
 void update_directory(FILE* disk,
-                      inode *inode,
+                      inode_table *itable,
+                      uint32_t inode_number,
                       uint8_t *block_bitmap,
                       group_descriptor *gd,
-                      uint32_t inode_number,
                       directory_block_t *dir_block) {
+
+    inode *inode = &itable->inodes[inode_number];
     free_all_data_blocks_of_inode(disk, inode, block_bitmap, gd);
-    uint32_t needed_blocks = (sizeof(directory_block_t) + dir_block->entries_count * sizeof(dir_entry_t) + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+    inode->file_size = sizeof(directory_block_t) + dir_block->entries_count * sizeof(dir_entry_t);
+    uint32_t needed_blocks = (inode->file_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    
     for (size_t i = 0; i < needed_blocks; i++) {
         int allocated_block = allocate_data_block_for_inode(disk, inode, i, block_bitmap, gd);
         if (allocated_block < 0) {
@@ -789,10 +787,10 @@ void update_directory(FILE* disk,
         }
 
         size_t offset = i * BLOCK_SIZE;
-        size_t bytes_left = sizeof(directory_block_t) + dir_block->entries_count * sizeof(dir_entry_t) - offset;
+        size_t bytes_left = inode->file_size - offset;
         size_t to_write = (bytes_left > BLOCK_SIZE) ? BLOCK_SIZE : bytes_left;
 
-        fseek(disk, (FIRST_DATA_BLOCK + allocated_block) * BLOCK_SIZE, SEEK_SET);
+        fseek(disk, + allocated_block * BLOCK_SIZE, SEEK_SET);
         fwrite((uint8_t *)dir_block + offset, to_write, 1, disk);
     }
 }
@@ -933,7 +931,7 @@ void delete_directory(FILE *disk, uint32_t dir_inode_number, uint32_t parent_ino
 
     // Write the updated parent directory block back to disk
     directory_block_t *new_parent_dir_block = remove_entry_from_directory_block(parent_dir_block, dir_inode_number);
-    update_directory(disk, &itable.inodes[parent_inode_number], block_bitmap, &gd, parent_inode_number, new_parent_dir_block);
+    update_directory(disk, &itable, parent_inode_number, block_bitmap, &gd, new_parent_dir_block);
 
     free(parent_dir_block);
     free(new_parent_dir_block);
@@ -1062,7 +1060,7 @@ void create_directory(FILE *disk,
         size_t bytes_left = dirblk_size - offset;
         size_t to_write = (bytes_left > BLOCK_SIZE) ? BLOCK_SIZE : bytes_left;
 
-        fseek(disk, (FIRST_DATA_BLOCK + allocated_block) * BLOCK_SIZE, SEEK_SET);
+        fseek(disk, allocated_block * BLOCK_SIZE, SEEK_SET);
         fwrite(src_ptr + offset, to_write, 1, disk);
 
         dir_inode->file_size += to_write;
@@ -1091,7 +1089,7 @@ void create_directory(FILE *disk,
     directory_block_t *new_parent_dir_block = add_entry_to_directory_block(parent_dir_block, dir_inode->inode_number, dir_name, 1);
     
     // Write the updated parent directory block back to disk
-    update_directory(disk, &itable.inodes[parent_inode_number], block_bitmap, &gd, parent_inode_number, parent_dir_block);
+    update_directory(disk, &itable, parent_inode_number, block_bitmap, &gd, parent_dir_block);
 
     free(parent_dir_block);
     free(new_parent_dir_block);
@@ -1218,21 +1216,15 @@ void create_file(FILE *disk,
     }
 
     // 3b. Add the new file entry to the parent directory block
-    if (parent_dir_block->entries_count >= BLOCK_SIZE / sizeof(dir_entry_t)) {
-        fprintf(stderr, "Error: parent directory block is full.\n");
-        // Roll back the inode
-        deallocate_inode(&itable, inode_bitmap, &gd, file_inode->inode_number);
-        free(file_data);
-        free(parent_dir_block);
-        goto cleanup;
-    }
-
     char full_name[256];
     snprintf(full_name, sizeof(full_name), "%s.%s", file_name, extension);
     directory_block_t *new_parent_dir_block = add_entry_to_directory_block(parent_dir_block, file_inode->inode_number, full_name, 0);
     
     // 3c. Write the updated parent directory block back to disk
-    update_directory(disk, &itable.inodes[parent_inode_number], block_bitmap, &gd, parent_inode_number, new_parent_dir_block);
+    update_directory(disk, &itable, parent_inode_number, block_bitmap, &gd, new_parent_dir_block);
+
+    printf("Parent directory block size: %zu bytes\n", sizeof(directory_block_t) + parent_dir_block->entries_count * sizeof(dir_entry_t));
+    printf("New parent directory block size: %zu bytes\n", sizeof(directory_block_t) + new_parent_dir_block->entries_count * sizeof(dir_entry_t));
 
     // 3d. Clean up the parent directory block
     free(parent_dir_block);
@@ -1259,7 +1251,7 @@ void create_file(FILE *disk,
         size_t bytes_left = file_size - offset;
         size_t to_write = (bytes_left > BLOCK_SIZE) ? BLOCK_SIZE : bytes_left;
 
-        fseek(disk, (FIRST_DATA_BLOCK + allocated_block) * BLOCK_SIZE, SEEK_SET);
+        fseek(disk, allocated_block * BLOCK_SIZE, SEEK_SET);
         fwrite(src_ptr + offset, to_write, 1, disk);
 
         bytes_written += to_write;
@@ -1363,7 +1355,7 @@ void delete_file(FILE *disk, uint32_t inode_number, uint32_t parent_inode_number
 
     // 4b. Write the updated parent directory block back to disk
     directory_block_t *new_parent_dir_block = remove_entry_from_directory_block(parent_dir_block, inode_number);
-    update_directory(disk, &itable.inodes[parent_inode_number], block_bitmap, &gd, parent_inode_number, new_parent_dir_block);
+    update_directory(disk, &itable, parent_inode_number, block_bitmap, &gd, new_parent_dir_block);
 
     // 4c. Clean up the parent directory block
     free(parent_dir_block);
@@ -1442,6 +1434,8 @@ void remove_entry_cli(const char *path) {
 
 // [END CLI FUNCTIONS]
 
+# define MAX_INPUT_SIZE 1024
+
 int main() {
     // Check if the drive file exists, if not, create it
     FILE *disk = fopen(DRIVE_NAME, "rb+");
@@ -1479,8 +1473,22 @@ int main() {
         }
 
         // Parse input
-        char *command = strtok(input, " ");
-        char *arg = strtok(NULL, " ");
+        char *command;
+        char *args[MAX_INPUT_SIZE - 1];
+        int args_count = 0;
+
+        char *token = strtok(input, " ");
+        if (token != NULL) {
+            command = token; // First token is the command
+
+            // Continue tokensize to find arguments
+            while((token = strtok(NULL, " ")) != NULL) {
+                args[args_count++] = token; // Store each argument
+            }
+        } else {
+            printf("No command found. \n");
+            continue;
+        }
 
         // Execute command
         if (strcmp(command, "ls") == 0) {
@@ -1489,32 +1497,52 @@ int main() {
         else if (strcmp(command, "pwd") == 0) {
             printf("%s\n", cwd);
         }
-        else if (strcmp(command, "cd") == 0) {
-            if (arg != NULL) {
-                cwd = change_directory(arg);
-            } else {
-                printf("cd: missing argument\n");
+        else if (strcmp(command, "cf") == 0) {
+            if (args_count < 2) {
+                fprintf(stderr, "Usage: cf <filename> <data>\n");
+                continue;
             }
+
+            char *filename = args[0];
+            char data[MAX_INPUT_SIZE - 2] = "";
+            for (int i = 1; i < args_count; i++) {
+                strcat(data, args[i]);
+                if (i < args_count - 1) {
+                    strcat(data, " ");
+                }
+            }
+
+            char *dot = strrchr(filename, '.');
+            char name[256];
+            char extension[256];
+
+            if (dot) {
+                strncpy(name, filename, dot - filename);
+                name[dot - filename] = '\0';
+                strncpy(extension, dot + 1, sizeof(extension) - 1);
+                extension[sizeof(extension) - 1] = '\0';
+            } else {
+                strncpy(name, filename, sizeof(name) - 1);
+                name[sizeof(name) - 1] = '\0';
+                extension[0] = '\0';
+            }
+
+            create_file(disk, name, extension, 0644, data, inode_number);
+        }
+        else if (strcmp(command, "cd") == 0) {
+            
         }
         else if (strcmp(command, "mkdir") == 0) {
-            if (arg != NULL) {
-                make_directory_cli(arg);
-            } else {
-                printf("mkdir: missing argument\n");
-            }
+            
         }
         else if (strcmp(command, "rm") == 0) {
-            if (arg != NULL) {
-                remove_entry_cli(arg);
-            } else {
-                printf("rm: missing argument\n");
-            }
+            
         }
         else if (strcmp(command, "exit") == 0) {
-            break;
+            
         }
         else {
-            printf("Unknown command: %s\n", command);
+            
         }
     }
 
