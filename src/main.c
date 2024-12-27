@@ -810,11 +810,15 @@ void update_directory(FILE* disk,
  */
 void delete_directory_recur(FILE *disk, 
                             uint32_t dir_inode_number,
+                            uint32_t par_inode_number,
                             group_descriptor *gd,
                             inode_table *itable,
                             uint8_t *inode_bitmap,
                             uint8_t *block_bitmap)
 {
+    printf("Directory inode #%u: deleting contents...\n", dir_inode_number);
+    printf("Parent inode #%u\n", par_inode_number);
+
     directory_block_t *dir_block = read_directory(disk, dir_inode_number);
     if (!dir_block) {
         fprintf(stderr, "Error: could not read directory block.\n");
@@ -823,11 +827,13 @@ void delete_directory_recur(FILE *disk,
 
     for (size_t i = 0; i < dir_block->entries_count; i++) {
         dir_entry_t *entry = &dir_block->entries[i];
-        if (entry->inode == 0) continue;
+        if (entry->inode == dir_inode_number || entry->inode == par_inode_number) {
+            continue; // Skip '.' and '..' entries
+        }
 
         // If the entry is a directory, recursively delete it
         if (entry->file_type == 1) {
-            delete_directory_recur(disk, entry->inode, gd, itable, inode_bitmap, block_bitmap);
+            delete_directory_recur(disk, entry->inode, dir_inode_number, gd, itable, inode_bitmap, block_bitmap);
         }
         // If the entry is a file, deallocate its inode and data blocks
         else if (entry->file_type == 0) {
@@ -895,7 +901,6 @@ void delete_directory(FILE *disk, uint32_t dir_inode_number, uint32_t parent_ino
     fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
     fread(&itable, sizeof(inode_table), 1, disk);
 
-
     // 2. Validate dir_inode_number
     if (dir_inode_number == 0 || dir_inode_number > INODES_COUNT) {
         fprintf(stderr, "Error: invalid inode number %u\n", dir_inode_number);
@@ -918,7 +923,7 @@ void delete_directory(FILE *disk, uint32_t dir_inode_number, uint32_t parent_ino
     }
 
     // 3. Recursively delete the directory and its contents
-    delete_directory_recur(disk, dir_inode_number, &gd, &itable, inode_bitmap, block_bitmap);
+    delete_directory_recur(disk, dir_inode_number, parent_inode_number, &gd, &itable, inode_bitmap, block_bitmap);
 
     // 4. Update the parent directory block to remove the entry
     directory_block_t *parent_dir_block = read_directory(disk, parent_inode_number);
@@ -1143,8 +1148,6 @@ void create_file(FILE *disk,
                  const char *data,
                  uint32_t parent_inode_number) {
 
-    printf("Creating file '%s.%s' in parent directory inode #%u\n", file_name, extension, parent_inode_number);
-
     // 1. Read necessary structures from disk
     // 1a. Read the group descriptor
     group_descriptor gd;
@@ -1165,8 +1168,6 @@ void create_file(FILE *disk,
     inode_table itable;
     fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
     fread(&itable, sizeof(inode_table), 1, disk);
-
-    printf("Finished step 1: reading structures from disk.\n");
 
     // 2. Create the file_t structure
     // 2a. Initialize the file_t structure
@@ -1200,8 +1201,6 @@ void create_file(FILE *disk,
     // 2c. Calculate the number of blocks needed for the file
     size_t needed_blocks = (file_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-    printf("Finished step 2: created file metadata and allocated inode.\n");
-
     // 3. Add file to the parent directory's directory block
     // 3a. Read the parent directory block
     directory_block_t *parent_dir_block = read_directory(disk, parent_inode_number);
@@ -1221,14 +1220,9 @@ void create_file(FILE *disk,
     // 3c. Write the updated parent directory block back to disk
     update_directory(disk, &itable, parent_inode_number, block_bitmap, &gd, new_parent_dir_block);
 
-    printf("Parent directory block size: %zu bytes\n", sizeof(directory_block_t) + parent_dir_block->entries_count * sizeof(dir_entry_t));
-    printf("New parent directory block size: %zu bytes\n", sizeof(directory_block_t) + new_parent_dir_block->entries_count * sizeof(dir_entry_t));
-
     // 3d. Clean up the parent directory block
     free(parent_dir_block);
     free(new_parent_dir_block);
-
-    printf("Finished step 3: added file entry to parent directory.\n");
 
     // 4. Allocate each needed block and write the file metadata/data
     uint8_t *src_ptr = (uint8_t *)file_data;
@@ -1257,8 +1251,6 @@ void create_file(FILE *disk,
 
     free(file_data);
 
-    printf("Finished step 4: allocated blocks and wrote file metadata/data.\n");
-
     // 5. Overwrite updated metadata structures
     // 5a. Group Descriptor
     fseek(disk, BLOCK_SIZE, SEEK_SET);
@@ -1275,8 +1267,6 @@ void create_file(FILE *disk,
     // 5d. Inode Table
     fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
     fwrite(&itable, sizeof(itable), 1, disk);
-
-    printf("Finished step 5: updated metadata structures.\n");
 
     printf("File '%s.%s' created (inode #%u). Size=%lu bytes.\n", file_name, extension, file_inode->inode_number, file_size);
 
@@ -1521,6 +1511,9 @@ void remove_entry_cli(FILE *disk, uint32_t inode_number, const char *flag, const
     if (strcmp(flag, "-f") == 0) {
         delete_file(disk, entry_inode_number, inode_number);
     } else if (strcmp(flag, "-d") == 0) {
+        printf("Entry inode number: %u\n", entry_inode_number);
+        printf("Parent inode number: %u\n", inode_number);
+
         delete_directory(disk, entry_inode_number, inode_number);
     } else {
         fprintf(stderr, "Error: invalid flag '%s'. Use -f for file, -d for directory.\n", flag);
@@ -1676,7 +1669,7 @@ int main() {
             remove_entry_cli(disk, inode_number, args[0], args[1]);
         }
         else if (strcmp(command, "exit") == 0) {
-            
+            break;
         }
         else {
             
