@@ -1087,7 +1087,7 @@ void create_directory(FILE *disk,
     directory_block_t *new_parent_dir_block = add_entry_to_directory_block(parent_dir_block, dir_inode->inode_number, dir_name, 1);
     
     // Write the updated parent directory block back to disk
-    update_directory(disk, &itable, parent_inode_number, block_bitmap, &gd, parent_dir_block);
+    update_directory(disk, &itable, parent_inode_number, block_bitmap, &gd, new_parent_dir_block);
 
     free(parent_dir_block);
     free(new_parent_dir_block);
@@ -1405,7 +1405,7 @@ void list_directory_cli(FILE *disk, uint32_t inode_number) {
         char *file_type = (entry->file_type == 0) ? "file" : "dir";
         
         if (entry->file_type == 1) {
-            printf(BLUE "%s/ (%s, inode=%u)\n" RESET, entry->name, file_type, entry->inode);
+            printf(BLUE "%s (%s, inode=%u)\n" RESET, entry->name, file_type, entry->inode);
         } else {
             printf("%s (%s, inode=%u)\n", entry->name, file_type, entry->inode);
         }
@@ -1453,11 +1453,8 @@ char* change_directory(const char *path) {
 }
 
 // Function to create a new directory
-void make_directory_cli(const char *path) {
-    // if (mkdir(path, 0755) != 0) {
-    //     perror("mkdir");
-    // }
-    // Not implemented yet
+void make_directories_cli(FILE *disk, uint32_t inode_number, const char *dirname) {
+    
 }
 
 // Function to remove a file or directory
@@ -1600,7 +1597,20 @@ int main() {
             
         }
         else if (strcmp(command, "mkdir") == 0) {
+            if (args_count < 1) {
+                fprintf(stderr, "Usage: mkdir <dirname>\n");
+                continue;
+            }
             
+            char dirname[MAX_INPUT_SIZE] = "";
+            for (int i = 0; i < args_count; i++) {
+                strcat(dirname, args[i]);
+                if (i < args_count - 1) {
+                    strcat(dirname, " ");
+                }
+            }
+
+            create_directory(disk, dirname, 0644, inode_number);
         }
         else if (strcmp(command, "rm") == 0) {
             if (args_count < 2) {
