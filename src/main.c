@@ -1385,11 +1385,12 @@ cleanup:
 
 
 // [CLI FUNCTIONS]
-#define RED     "\033[1;31m"
-#define GREEN   "\033[1;32m"
-#define YELLOW  "\033[1;33m"
-#define BLUE    "\033[1;34m"
-#define RESET   "\033[0m"
+# define MAX_INPUT_SIZE 1024
+# define RED     "\033[1;31m"
+# define GREEN   "\033[1;32m"
+# define YELLOW  "\033[1;33m"
+# define BLUE    "\033[1;34m"
+# define RESET   "\033[0m"
 
 // Function to list directory contents
 void list_directory_cli(FILE *disk, uint32_t inode_number) {
@@ -1448,8 +1449,45 @@ void read_file_cli(FILE *disk, uint32_t inode_number, char *filename) {
 }
 
 // Function to change directory
-char* change_directory(const char *path) {
-    // Not implemented yet
+int change_directory(FILE *disk, char *current_dirname, uint32_t inode_number, const char *dirname) {
+    directory_block_t *dir_block = read_directory(disk, inode_number);
+    if (!dir_block) {
+        fprintf(stderr, "Error: could not read directory block.\n");
+        return -1;
+    }
+
+    // Find the inode number of the directory to change to
+    uint32_t new_inode_number = -1;
+    for (size_t i = 0; i < dir_block->entries_count; i++) {
+        dir_entry_t *entry = &dir_block->entries[i];
+        if (strcmp(entry->name, dirname) == 0 && entry->file_type == 1) {
+            new_inode_number = entry->inode;
+            break;
+        }
+    }
+    
+    if (new_inode_number == -1) {
+        fprintf(stderr, "Error: directory '%s' not found.\n", dirname);
+        return -1;
+    }
+
+    // Update the current directory name
+    if (strcmp(dirname, "..") == 0) {
+        if (strcmp(current_dirname, "root") != 0) {
+            // Handle going up one directory
+            char *last_slash = strrchr(current_dirname, '/');
+            if (last_slash != NULL) {
+                *last_slash = '\0';
+            } else {
+                strcpy(current_dirname, "root");
+            }
+        }
+    } else if (strcmp(dirname, ".") != 0) {
+        strcat(current_dirname, "/");
+        strcat(current_dirname, dirname);
+    }
+
+    return new_inode_number;
 }
 
 // Function to create a new directory
@@ -1491,8 +1529,6 @@ void remove_entry_cli(FILE *disk, uint32_t inode_number, const char *flag, const
 
 // [END CLI FUNCTIONS]
 
-# define MAX_INPUT_SIZE 1024
-
 int main() {
     // Check if the drive file exists, if not, create it
     FILE *disk = fopen(DRIVE_NAME, "rb+");
@@ -1508,7 +1544,11 @@ int main() {
     uint32_t inode_number = 0;
 
     char *cwd = malloc(MAX_INPUT_SIZE);
-    cwd = "root";
+    if (cwd == NULL) {
+        fprintf(stderr, "Error: could not allocate memory for cwd.\n");
+        return 1;
+    }
+    strcpy(cwd, "root");
 
     while(1) {
         //Display the prompt
@@ -1594,7 +1634,23 @@ int main() {
             read_file_cli(disk, inode_number, args[0]);   
         }
         else if (strcmp(command, "cd") == 0) {
-            
+            if (args_count < 1) {
+                fprintf(stderr, "Usage: cd <dirname>\n");
+                continue;
+            }
+
+            char dirname[MAX_INPUT_SIZE] = "";
+            for (int i = 0; i < args_count; i++) {
+                strcat(dirname, args[i]);
+                if (i < args_count - 1) {
+                    strcat(dirname, " ");
+                }
+            }
+
+            int new_inode_number = change_directory(disk, cwd, inode_number, dirname);
+            if (new_inode_number != -1) {
+                inode_number = new_inode_number;
+            }
         }
         else if (strcmp(command, "mkdir") == 0) {
             if (args_count < 1) {
