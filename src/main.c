@@ -76,16 +76,14 @@ void deallocate_inode(inode_table *itable,
         return;
     }
 
-    uint32_t index = inode_number - 1;
-
     // 2. Check if the bitmap bit is actually set
-    if (!is_bit_free(inode_bitmap, index)) {
+    if (!is_bit_free(inode_bitmap, inode_number)) {
         // For reporting, grab the inode before zeroing it
-        inode *old_inode = &itable->inodes[index];
+        inode *old_inode = &itable->inodes[inode_number];
         uint32_t old_file_type = old_inode->file_type;
 
         // Free the bit in the bitmap
-        free_bitmap_bit(inode_bitmap, index);
+        free_bitmap_bit(inode_bitmap, inode_number);
 
         // If this was a directory, decrement used_dirs_count
         if (old_file_type == 1) {
@@ -93,7 +91,7 @@ void deallocate_inode(inode_table *itable,
         }
 
         // Clear the inode structure
-        memset(&itable->inodes[index], 0, sizeof(inode));
+        memset(&itable->inodes[inode_number], 0, sizeof(inode));
 
         // Decrement the local used_inodes count
         if (itable->used_inodes > 0) {
@@ -1414,7 +1412,7 @@ void list_directory_cli(FILE *disk, uint32_t inode_number) {
     }
 }
 
-void read_file_cli(FILE *disk, char *filename) {
+void read_file_cli(FILE *disk, uint32_t inode_number, char *filename) {
     directory_block_t *dir_block = read_directory(disk, 0);
     if (!dir_block) {
         fprintf(stderr, "Error: could not read directory block.\n");
@@ -1463,8 +1461,35 @@ void make_directory_cli(const char *path) {
 }
 
 // Function to remove a file or directory
-void remove_entry_cli(const char *path) {
-    // Not implemented yet
+void remove_entry_cli(FILE *disk, uint32_t inode_number, const char *flag, const char *path) {
+    directory_block_t *dir_block = read_directory(disk, inode_number);
+    if (!dir_block) {
+        fprintf(stderr, "Error: could not read directory block.\n");
+        return;
+    }
+
+    // Find the inode number of the entry to remove
+    uint32_t entry_inode_number = -1;
+    for (size_t i = 0; i < dir_block->entries_count; i++) {
+        dir_entry_t *entry = &dir_block->entries[i];
+        if (strcmp(entry->name, path) == 0) {
+            entry_inode_number = entry->inode;
+            break;
+        }
+    }
+
+    if (entry_inode_number == -1) {
+        fprintf(stderr, "Error: entry '%s' not found.\n", path);
+        return;
+    }
+
+    if (strcmp(flag, "-f") == 0) {
+        delete_file(disk, entry_inode_number, inode_number);
+    } else if (strcmp(flag, "-d") == 0) {
+        delete_directory(disk, entry_inode_number, inode_number);
+    } else {
+        fprintf(stderr, "Error: invalid flag '%s'. Use -f for file, -d for directory.\n", flag);
+    }
 }
 
 // [END CLI FUNCTIONS]
@@ -1565,7 +1590,11 @@ int main() {
             create_file(disk, name, extension, 0644, data, inode_number);
         }
         else if (strcmp(command, "rf") == 0) {
-            read_file_cli(disk, args[0]);   
+            if (args_count < 1) {
+                fprintf(stderr, "Usage: rf <filename>\n");
+                continue;
+            }
+            read_file_cli(disk, inode_number, args[0]);   
         }
         else if (strcmp(command, "cd") == 0) {
             
@@ -1574,7 +1603,11 @@ int main() {
             
         }
         else if (strcmp(command, "rm") == 0) {
-            
+            if (args_count < 2) {
+                fprintf(stderr, "Usage: rm <-f/-d> <filename>\n");
+                continue;
+            }
+            remove_entry_cli(disk, inode_number, args[0], args[1]);
         }
         else if (strcmp(command, "exit") == 0) {
             
