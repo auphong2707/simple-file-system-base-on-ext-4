@@ -1414,6 +1414,41 @@ void list_directory_cli(FILE *disk, uint32_t inode_number) {
     }
 }
 
+void read_file_cli(FILE *disk, char *filename) {
+    directory_block_t *dir_block = read_directory(disk, 0);
+    if (!dir_block) {
+        fprintf(stderr, "Error: could not read directory block.\n");
+        return;
+    }
+
+    // Find the inode number of the file
+    uint32_t file_inode_number = -1;
+    for (size_t i = 0; i < dir_block->entries_count; i++) {
+        dir_entry_t *entry = &dir_block->entries[i];
+        if (strcmp(entry->name, filename) == 0) {
+            file_inode_number = entry->inode;
+            break;
+        }
+    }
+    if (file_inode_number == -1) {
+        fprintf(stderr, "Error: file '%s' not found.\n", filename);
+        return;
+    }
+
+    // Read the file data
+    file_t *file_data = read_file(disk, file_inode_number);
+    if (!file_data) {
+        fprintf(stderr, "Error: could not read file data.\n");
+        return;
+    }
+
+    printf("File Name: %s\n", file_data->name);
+    printf("File Extension: %s\n", file_data->extension);
+    printf("File Size: %lu bytes\n", file_data->size);
+    printf("File Data:\n%s\n", file_data->data);
+    free(file_data);
+}
+
 // Function to change directory
 char* change_directory(const char *path) {
     // Not implemented yet
@@ -1528,6 +1563,9 @@ int main() {
             }
 
             create_file(disk, name, extension, 0644, data, inode_number);
+        }
+        else if (strcmp(command, "rf") == 0) {
+            read_file_cli(disk, args[0]);   
         }
         else if (strcmp(command, "cd") == 0) {
             
