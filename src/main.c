@@ -1374,6 +1374,115 @@ cleanup:
 }
 
 
+/**
+ * @brief Modifies the content of an existing file in the file system.
+ *
+ * This function finds the file by its inode number, deallocates all existing
+ * data blocks associated with it, and writes the new content into the file.
+ * The function updates the file's metadata and ensures changes are reflected
+ * on the disk.
+ *
+ * @param disk Pointer to the file representing the disk.
+ * @param inode_number The inode number of the file to be modified.
+ * @param new_data The new content to write into the file.
+ */
+void write_file(FILE *disk, uint32_t inode_number, const char *new_data) {
+    // 1. Read necessary structures from disk
+    // 1a. Read the group descriptor
+    group_descriptor gd;
+    fseek(disk, BLOCK_SIZE, SEEK_SET);
+    fread(&gd, sizeof(group_descriptor), 1, disk);
+
+    // 1b. Read the block bitmap
+    uint8_t *block_bitmap = (uint8_t *)malloc(BLOCKS_COUNT / 8);
+    fseek(disk, gd.block_bitmap * BLOCK_SIZE, SEEK_SET);
+    fread(block_bitmap, BLOCKS_COUNT / 8, 1, disk);
+
+    // 1c. Read the inode bitmap
+    uint8_t *inode_bitmap = (uint8_t *)malloc(INODES_COUNT / 8);
+    fseek(disk, gd.inode_bitmap * BLOCK_SIZE, SEEK_SET);
+    fread(inode_bitmap, INODES_COUNT / 8, 1, disk);
+
+    // 1d. Read the inode table
+    inode_table itable;
+    fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
+    fread(&itable, sizeof(inode_table), 1, disk);
+
+    // 2. Validate inode number
+    if (inode_number == 0 || inode_number > INODES_COUNT) {
+        fprintf(stderr, "Error: invalid inode number %u\n", inode_number);
+        goto cleanup;
+    }
+
+    inode *file_inode = &itable.inodes[inode_number];
+
+    // Check if the inode is allocated
+    if (is_bit_free(inode_bitmap, inode_number)) {
+        fprintf(stderr, "Error: inode #%u is not allocated.\n", inode_number);
+        goto cleanup;
+    }
+
+    // Check if the inode is a file
+    if (file_inode->file_type != 0) {
+        fprintf(stderr, "Error: inode #%u is not a file.\n", inode_number);
+        goto cleanup;
+    }
+
+    // 3. Free all existing data blocks used by the file
+    free_all_data_blocks_of_inode(disk, file_inode, block_bitmap, &gd);
+
+    // 4. Write new data to the file
+    size_t new_data_size = strlen(new_data);
+    size_t needed_blocks = (new_data_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    file_inode->file_size = (uint32_t)new_data_size;
+
+    uint8_t *src_ptr = (uint8_t *)new_data;
+    size_t bytes_written = 0;
+
+    for (size_t i = 0; i < needed_blocks; i++) {
+        int allocated_block = allocate_data_block_for_inode(disk, file_inode, i, block_bitmap, &gd);
+        if (allocated_block < 0) {
+            fprintf(stderr, "Error: could not allocate data block for file.\n");
+            goto cleanup;
+        }
+
+        size_t offset = i * BLOCK_SIZE;
+        size_t bytes_left = new_data_size - offset;
+        size_t to_write = (bytes_left > BLOCK_SIZE) ? BLOCK_SIZE : bytes_left;
+
+        fseek(disk, allocated_block * BLOCK_SIZE, SEEK_SET);
+        fwrite(src_ptr + offset, to_write, 1, disk);
+
+        bytes_written += to_write;
+    }
+
+    // 5. Write updated metadata back to disk
+    // 5a. Group Descriptor
+    fseek(disk, BLOCK_SIZE, SEEK_SET);
+    fwrite(&gd, sizeof(gd), 1, disk);
+
+    // 5b. Block Bitmap
+    fseek(disk, gd.block_bitmap * BLOCK_SIZE, SEEK_SET);
+    fwrite(block_bitmap, BLOCKS_COUNT / 8, 1, disk);
+
+    // 5c. Inode Bitmap
+    fseek(disk, gd.inode_bitmap * BLOCK_SIZE, SEEK_SET);
+    fwrite(inode_bitmap, INODES_COUNT / 8, 1, disk);
+
+    // 5d. Inode Table
+    fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
+    fwrite(&itable, sizeof(inode_table), 1, disk);
+
+    printf("File with inode #%u updated successfully. New size: %lu bytes.\n", inode_number, new_data_size);
+
+cleanup:
+    free(block_bitmap);
+    free(inode_bitmap);
+    fseek(disk, 0, SEEK_SET);
+}
+
+
+
 // [CLI FUNCTIONS]
 # define MAX_INPUT_SIZE 1024
 # define RED     "\033[1;31m"
@@ -1436,6 +1545,35 @@ void read_file_cli(FILE *disk, uint32_t inode_number, char *filename) {
     printf("File Size: %lu bytes\n", file_data->size);
     printf("File Data:\n%s\n", file_data->data);
     free(file_data);
+}
+
+void write_file_cli(FILE *disk, uint32_t inode_number, const char *filename, const char *new_content) {
+    // Locate the file in the current directory
+    directory_block_t *dir_block = read_directory(disk, inode_number);
+    if (!dir_block) {
+        fprintf(stderr, "Error: could not read directory block.\n");
+        return;
+    }
+
+    uint32_t file_inode_number = -1;
+    for (size_t i = 0; i < dir_block->entries_count; i++) {
+        dir_entry_t *entry = &dir_block->entries[i];
+        if (strcmp(entry->name, filename) == 0) {
+            file_inode_number = entry->inode;
+            break;
+        }
+    }
+
+    if (file_inode_number == -1) {
+        fprintf(stderr, "Error: file '%s' not found.\n", filename);
+        free(dir_block);
+        return;
+    }
+
+    // Update the file's content
+    write_file(disk, file_inode_number, new_content);
+
+    free(dir_block);
 }
 
 // Function to change directory
@@ -1625,6 +1763,23 @@ int main() {
                 continue;
             }
             read_file_cli(disk, inode_number, args[0]);   
+        }
+        else if (strcmp(command, "wf") == 0) {
+            if (args_count < 2) {
+                fprintf(stderr, "Usage: wf <filename> <new_content>\n");
+                continue;
+            }
+
+            char *filename = args[0];
+            char new_content[MAX_INPUT_SIZE - 1] = "";
+            for (int i = 1; i < args_count; i++) {
+                strcat(new_content, args[i]);
+                if (i < args_count - 1) {
+                    strcat(new_content, " ");
+                }
+            }
+
+            write_file_cli(disk, inode_number, filename, new_content);
         }
         else if (strcmp(command, "cd") == 0) {
             if (args_count < 1) {
