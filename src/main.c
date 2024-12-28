@@ -816,9 +816,6 @@ void delete_directory_recur(FILE *disk,
                             uint8_t *inode_bitmap,
                             uint8_t *block_bitmap)
 {
-    printf("Directory inode #%u: deleting contents...\n", dir_inode_number);
-    printf("Parent inode #%u\n", par_inode_number);
-
     directory_block_t *dir_block = read_directory(disk, dir_inode_number);
     if (!dir_block) {
         fprintf(stderr, "Error: could not read directory block.\n");
@@ -848,8 +845,6 @@ void delete_directory_recur(FILE *disk,
 
     // Deallocate the inode
     deallocate_inode(itable, inode_bitmap, gd, dir_inode_number);
-
-    printf("Directory inode #%u deleted successfully.\n", dir_inode_number);
 
     free(dir_block);
 }
@@ -1708,9 +1703,6 @@ void remove_entry_cli(FILE *disk, uint32_t inode_number, const char *flag, const
     if (strcmp(flag, "-f") == 0) {
         delete_file(disk, entry_inode_number, inode_number);
     } else if (strcmp(flag, "-d") == 0) {
-        printf("Entry inode number: %u\n", entry_inode_number);
-        printf("Parent inode number: %u\n", inode_number);
-
         delete_directory(disk, entry_inode_number, inode_number);
     } else {
         fprintf(stderr, "Error: invalid flag '%s'. Use -f for file, -d for directory.\n", flag);
@@ -1825,12 +1817,12 @@ int main() {
         }
         else if (strcmp(command, "wf") == 0) {
             if (args_count < 3) {
-                fprintf(stderr, "Usage: wf <filename> <mode> <new_content>\n");
+                fprintf(stderr, "Usage: wf <-a/-o> <filename> <new_content>\n");
                 continue;
             }
 
-            char *filename = args[0];
-            char *mode = args[1];
+            char *mode = args[0];
+            char *filename = args[1];
             char new_content[MAX_INPUT_SIZE - 2] = "";
             for (int i = 2; i < args_count; i++) {
                 strcat(new_content, args[i]);
