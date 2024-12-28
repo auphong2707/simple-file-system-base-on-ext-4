@@ -122,11 +122,13 @@ directory_block_t *remove_entry_from_directory_block(directory_block_t *dirblk, 
         return NULL;
     }
 
-    // Copy the entries before the one to remove
-    memcpy(new_dirblk, dirblk, i * sizeof(dir_entry_t));
+    for (size_t j = 0; j < i; j++) {
+        new_dirblk->entries[j] = dirblk->entries[j];
+    }
 
-    // Copy the entries after the one to remove
-    memcpy(new_dirblk + i, dirblk + i + 1, (dirblk->entries_count - i - 1) * sizeof(dir_entry_t));
+    for (size_t j = i + 1; j < dirblk->entries_count; j++) {
+        new_dirblk->entries[j - 1] = dirblk->entries[j];
+    }
 
     // Update the entries count
     new_dirblk->entries_count = dirblk->entries_count - 1;
