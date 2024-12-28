@@ -1377,16 +1377,17 @@ cleanup:
 /**
  * @brief Modifies the content of an existing file in the file system.
  *
- * This function finds the file by its inode number, deallocates all existing
- * data blocks associated with it, and writes the new content into the file.
+ * This function finds the file by its inode number and either appends new data
+ * or overwrites the file's content based on the specified mode (-o or -a).
  * The function updates the file's metadata and ensures changes are reflected
  * on the disk.
  *
  * @param disk Pointer to the file representing the disk.
  * @param inode_number The inode number of the file to be modified.
  * @param new_data The new content to write into the file.
+ * @param mode The mode of operation: "-o" for overwrite, "-a" for append.
  */
-void write_file(FILE *disk, uint32_t inode_number, const char *new_data) {
+void write_file(FILE *disk, uint32_t inode_number, const char *new_data, const char *mode) {
     // 1. Read necessary structures from disk
     // 1a. Read the group descriptor
     group_descriptor gd;
@@ -1428,59 +1429,117 @@ void write_file(FILE *disk, uint32_t inode_number, const char *new_data) {
         goto cleanup;
     }
 
-    // 3. Free all existing data blocks used by the file
-    free_all_data_blocks_of_inode(disk, file_inode, block_bitmap, &gd);
+    // 3. Read the existing file metadata
+    file_t *old_file = (file_t *)malloc(sizeof(file_t) + file_inode->file_size);
+    if (!old_file) {
+        fprintf(stderr, "Error: could not allocate memory for existing file metadata.\n");
+        goto cleanup;
+    }
 
-    // 4. Write new data to the file
+    if (read_inode_data(disk, file_inode, (char *)old_file, file_inode->file_size) != 0) {
+        fprintf(stderr, "Error: could not read existing file metadata.\n");
+        free(old_file);
+        goto cleanup;
+    }
+
+    // 4. Determine the new content size and behavior based on mode
+    size_t old_data_size = file_inode->file_size - sizeof(file_t);
     size_t new_data_size = strlen(new_data);
-    size_t needed_blocks = (new_data_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    file_inode->file_size = (uint32_t)new_data_size;
+    size_t total_data_size;
 
-    uint8_t *src_ptr = (uint8_t *)new_data;
+    if (strcmp(mode, "-o") == 0) {
+        // Overwrite mode: replace old data with new data
+        free_all_data_blocks_of_inode(disk, file_inode, block_bitmap, &gd);
+        total_data_size = new_data_size;
+    } else if (strcmp(mode, "-a") == 0) {
+        // Append mode: add new data to the existing data
+        total_data_size = old_data_size + new_data_size;
+    } else {
+        fprintf(stderr, "Error: invalid mode '%s'. Use -o for overwrite or -a for append.\n", mode);
+        free(old_file);
+        goto cleanup;
+    }
+
+    size_t new_file_size = sizeof(file_t) + total_data_size;
+    file_t *new_file = (file_t *)malloc(new_file_size);
+    if (!new_file) {
+        fprintf(stderr, "Error: could not allocate memory for new file content.\n");
+        free(old_file);
+        goto cleanup;
+    }
+
+    // Copy metadata from the old file
+    strncpy(new_file->name, old_file->name, sizeof(new_file->name) - 1);
+    strncpy(new_file->extension, old_file->extension, sizeof(new_file->extension) - 1);
+    new_file->name[sizeof(new_file->name) - 1] = '\0';
+    new_file->extension[sizeof(new_file->extension) - 1] = '\0';
+    new_file->inode = old_file->inode;
+    new_file->size = new_file_size;
+
+    // Copy existing data and append new data
+    if (strcmp(mode, "-a") == 0) {
+        memcpy(new_file->data, old_file->data, old_data_size);
+        memcpy(new_file->data + old_data_size, new_data, new_data_size);
+    } else {
+        memset(new_file->data, 0, total_data_size); // Clear data in overwrite mode
+        memcpy(new_file->data, new_data, new_data_size);
+    }
+
+    // 5. Write the new file data to blocks
+    file_inode->file_size = (uint32_t)new_file_size;
+    size_t needed_blocks = (new_file_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    uint8_t *src_ptr = (uint8_t *)new_file;
     size_t bytes_written = 0;
 
     for (size_t i = 0; i < needed_blocks; i++) {
         int allocated_block = allocate_data_block_for_inode(disk, file_inode, i, block_bitmap, &gd);
         if (allocated_block < 0) {
             fprintf(stderr, "Error: could not allocate data block for file.\n");
+            free(old_file);
+            free(new_file);
             goto cleanup;
         }
 
         size_t offset = i * BLOCK_SIZE;
-        size_t bytes_left = new_data_size - offset;
+        size_t bytes_left = new_file_size - offset;
         size_t to_write = (bytes_left > BLOCK_SIZE) ? BLOCK_SIZE : bytes_left;
 
+        // Zero out the entire block before writing (to clear residual data)
+        uint8_t temp_block[BLOCK_SIZE] = {0};
+        memcpy(temp_block, src_ptr + offset, to_write);
         fseek(disk, allocated_block * BLOCK_SIZE, SEEK_SET);
-        fwrite(src_ptr + offset, to_write, 1, disk);
+        fwrite(temp_block, BLOCK_SIZE, 1, disk);
 
         bytes_written += to_write;
     }
 
-    // 5. Write updated metadata back to disk
-    // 5a. Group Descriptor
+    free(old_file);
+    free(new_file);
+
+    // 6. Write updated metadata back to disk
+    // 6a. Group Descriptor
     fseek(disk, BLOCK_SIZE, SEEK_SET);
     fwrite(&gd, sizeof(gd), 1, disk);
 
-    // 5b. Block Bitmap
+    // 6b. Block Bitmap
     fseek(disk, gd.block_bitmap * BLOCK_SIZE, SEEK_SET);
     fwrite(block_bitmap, BLOCKS_COUNT / 8, 1, disk);
 
-    // 5c. Inode Bitmap
+    // 6c. Inode Bitmap
     fseek(disk, gd.inode_bitmap * BLOCK_SIZE, SEEK_SET);
     fwrite(inode_bitmap, INODES_COUNT / 8, 1, disk);
 
-    // 5d. Inode Table
+    // 6d. Inode Table
     fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
     fwrite(&itable, sizeof(inode_table), 1, disk);
 
-    printf("File with inode #%u updated successfully. New size: %lu bytes.\n", inode_number, new_data_size);
+    printf("File with inode #%u updated successfully. New size: %lu bytes.\n", inode_number, new_file_size);
 
 cleanup:
     free(block_bitmap);
     free(inode_bitmap);
     fseek(disk, 0, SEEK_SET);
 }
-
 
 
 // [CLI FUNCTIONS]
@@ -1547,7 +1606,7 @@ void read_file_cli(FILE *disk, uint32_t inode_number, char *filename) {
     free(file_data);
 }
 
-void write_file_cli(FILE *disk, uint32_t inode_number, const char *filename, const char *new_content) {
+void write_file_cli(FILE *disk, uint32_t inode_number, const char *filename, const char *mode, const char *new_content) {
     // Locate the file in the current directory
     directory_block_t *dir_block = read_directory(disk, inode_number);
     if (!dir_block) {
@@ -1570,8 +1629,8 @@ void write_file_cli(FILE *disk, uint32_t inode_number, const char *filename, con
         return;
     }
 
-    // Update the file's content
-    write_file(disk, file_inode_number, new_content);
+    // Update the file's content based on the mode
+    write_file(disk, file_inode_number, new_content, mode);
 
     free(dir_block);
 }
@@ -1765,21 +1824,22 @@ int main() {
             read_file_cli(disk, inode_number, args[0]);   
         }
         else if (strcmp(command, "wf") == 0) {
-            if (args_count < 2) {
-                fprintf(stderr, "Usage: wf <filename> <new_content>\n");
+            if (args_count < 3) {
+                fprintf(stderr, "Usage: wf <filename> <mode> <new_content>\n");
                 continue;
             }
 
             char *filename = args[0];
-            char new_content[MAX_INPUT_SIZE - 1] = "";
-            for (int i = 1; i < args_count; i++) {
+            char *mode = args[1];
+            char new_content[MAX_INPUT_SIZE - 2] = "";
+            for (int i = 2; i < args_count; i++) {
                 strcat(new_content, args[i]);
                 if (i < args_count - 1) {
                     strcat(new_content, " ");
                 }
             }
 
-            write_file_cli(disk, inode_number, filename, new_content);
+            write_file_cli(disk, inode_number, filename, mode, new_content);
         }
         else if (strcmp(command, "cd") == 0) {
             if (args_count < 1) {
