@@ -14,6 +14,8 @@
 # define MAX_INODE_COUNT 1024
 # define FIRST_DATA_BLOCK (4 + INODES_COUNT * INODE_SIZE / BLOCK_SIZE + 1)
 
+bool VERBOSE = true;
+
 // [HELPER FUNCTIONS]
 // Allocate a new inode in the inode table
 inode *allocate_inode(inode_table *itable,
@@ -951,7 +953,7 @@ void delete_directory(FILE *disk, uint32_t dir_inode_number, uint32_t parent_ino
     fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
     fwrite(&itable, sizeof(itable), 1, disk);
 
-    printf("Directory inode #%u deleted successfully.\n", dir_inode_number);
+    if (VERBOSE) printf("Directory inode #%u deleted successfully.\n", dir_inode_number);
 
 cleanup:
     free(block_bitmap);
@@ -1076,14 +1078,6 @@ void create_directory(FILE *disk,
     }
 
     // Add the new directory entry to the parent directory block
-    if (parent_dir_block->entries_count >= BLOCK_SIZE / sizeof(dir_entry_t)) {
-        fprintf(stderr, "Error: parent directory block is full.\n");
-        // Roll back the inode
-        deallocate_inode(&itable, inode_bitmap, &gd, dir_inode->inode_number);
-        free(parent_dir_block);
-        goto cleanup;
-    }
-
     directory_block_t *new_parent_dir_block = add_entry_to_directory_block(parent_dir_block, dir_inode->inode_number, dir_name, 1);
     
     // Write the updated parent directory block back to disk
@@ -1109,7 +1103,7 @@ void create_directory(FILE *disk,
     fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
     fwrite(&itable, sizeof(itable), 1, disk);
 
-    printf("Directory '%s' created (inode #%u). Size=%u bytes.\n", dir_name, dir_inode->inode_number, dir_inode->file_size);
+    if (VERBOSE) printf("Directory '%s' created (inode #%u). Size=%u bytes.\n", dir_name, dir_inode->inode_number, dir_inode->file_size);
 
 cleanup:
     free(block_bitmap);
@@ -1263,7 +1257,7 @@ void create_file(FILE *disk,
     fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
     fwrite(&itable, sizeof(itable), 1, disk);
 
-    printf("File '%s.%s' created (inode #%u). Size=%lu bytes.\n", file_name, extension, file_inode->inode_number, file_size);
+    if (VERBOSE) printf("File '%s.%s' created (inode #%u). Size=%lu bytes.\n", file_name, extension, file_inode->inode_number, file_size);
 
 cleanup:
     free(block_bitmap);
@@ -1361,7 +1355,7 @@ void delete_file(FILE *disk, uint32_t inode_number, uint32_t parent_inode_number
     fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
     fwrite(&itable, sizeof(itable), 1, disk);
 
-    printf("File with inode #%u deleted successfully.\n", inode_number);
+    if (VERBOSE) printf("File with inode #%u deleted successfully.\n", inode_number);
 
 cleanup:
     free(block_bitmap);
@@ -1528,7 +1522,7 @@ void write_file(FILE *disk, uint32_t inode_number, const char *new_data, const c
     fseek(disk, gd.inode_table * BLOCK_SIZE, SEEK_SET);
     fwrite(&itable, sizeof(inode_table), 1, disk);
 
-    printf("File with inode #%u updated successfully. New size: %lu bytes.\n", inode_number, new_file_size);
+    if (VERBOSE) printf("File with inode #%u updated successfully. New size: %lu bytes.\n", inode_number, new_file_size);
 
 cleanup:
     free(block_bitmap);
@@ -1594,10 +1588,12 @@ void read_file_cli(FILE *disk, uint32_t inode_number, char *filename) {
         return;
     }
 
-    printf("File Name: %s\n", file_data->name);
-    printf("File Extension: %s\n", file_data->extension);
-    printf("File Size: %lu bytes\n", file_data->size);
-    printf("File Data:\n%s\n", file_data->data);
+    if (VERBOSE) {
+        printf("File Name: %s\n", file_data->name);
+        printf("File Extension: %s\n", file_data->extension);
+        printf("File Size: %lu bytes\n", file_data->size);
+        printf("File Data:\n%s\n", file_data->data);
+    }
     free(file_data);
 }
 
@@ -1711,6 +1707,87 @@ void remove_entry_cli(FILE *disk, uint32_t inode_number, const char *flag, const
 
 // [END CLI FUNCTIONS]
 
+# include <time.h>
+
+
+void test(FILE *disk) {
+    uint32_t root_inode_number = 0;
+    clock_t t; 
+    VERBOSE = 0; // Assuming VERBOSE is an integer flag
+
+    // TEST 1: Test create_directory function execution time by creating 3000 directories
+    printf("TEST 1: Creating 3000 directories...\n");
+    t = clock(); 
+    for (int i = 0; i < 3000; i++) {
+        char dirname[256];
+        snprintf(dirname, sizeof(dirname), "dir_%d", i);
+        create_directory(disk, dirname, 0755, root_inode_number);
+    }
+    t = clock() - t;
+
+    double time_taken = ((double)t) / CLOCKS_PER_SEC;
+    printf("Time taken to create 3000 directories: %f seconds\n\n", time_taken);
+
+    // TEST 2: Test delete_directory function execution time by deleting 3000 directories
+    printf("TEST 2: Deleting 3000 directories...\n");
+    t = clock();
+    for (int i = 0; i < 3000; i++) {
+        char dirname[256];
+        snprintf(dirname, sizeof(dirname), "dir_%d", i);
+        remove_entry_cli(disk, root_inode_number, "-d", dirname);
+    }
+    t = clock() - t;
+
+    time_taken = ((double)t) / CLOCKS_PER_SEC;
+    printf("Time taken to delete 3000 directories: %f seconds\n\n", time_taken);
+
+    // TEST 3: Test create_file function execution time by creating 100 files with 1MB data
+    printf("TEST 3: Creating 100 files with 1MB data...\n");
+    char data[1024 * 1024];
+    for (int i = 0; i < 1024 * 1024; i++) {
+        data[i] = (rand() % 26) + 'a';
+    }
+    t = clock();
+    for (int i = 0; i < 100; i++) {
+        char filename[256];
+        snprintf(filename, sizeof(filename), "file_%d", i);
+        create_file(disk, filename, "txt", 0644, data, root_inode_number);
+    }
+    t = clock() - t;
+
+    time_taken = ((double)t) / CLOCKS_PER_SEC;
+    printf("Time taken to create 100 files with 1MB data: %f seconds\n\n", time_taken);
+
+    // TEST 4: Test read_file function execution time by reading 100 files
+    printf("TEST 4: Reading 100 files...\n");
+    t = clock();
+    for (int i = 0; i < 100; i++) {
+        char filename[256];
+        snprintf(filename, sizeof(filename), "file_%d.txt", i);
+        read_file_cli(disk, root_inode_number, filename);
+    }
+    t = clock() - t;
+
+    time_taken = ((double)t) / CLOCKS_PER_SEC;
+    printf("Time taken to read 100 files with 1MB data: %f seconds\n\n", time_taken);
+
+    // TEST 5: Test delete_file function execution time by deleting 100 files
+    printf("TEST 5: Deleting 100 files...\n");
+    t = clock();
+    for (int i = 0; i < 100; i++) {
+        char filename[256];
+        snprintf(filename, sizeof(filename), "file_%d.txt", i);
+        remove_entry_cli(disk, root_inode_number, "-f", filename);
+    }
+    t = clock() - t;
+
+    time_taken = ((double)t) / CLOCKS_PER_SEC;
+    printf("Time taken to delete 100 files with 1MB data: %f seconds\n\n", time_taken);
+
+
+    VERBOSE = 1; // Restore VERBOSE flag
+}
+
 int main() {
     // Check if the drive file exists, if not, create it
     FILE *disk = fopen(DRIVE_NAME, "rb+");
@@ -1737,7 +1814,7 @@ int main() {
         printf(GREEN "cli_fi %s>" RESET, cwd);
         fflush(stdout);
 
-        // Read iinput
+        // Read input
         if (fgets(input, MAX_INPUT_SIZE, stdin) == NULL) {
             printf("\n");
             break;
@@ -1877,6 +1954,9 @@ int main() {
         }
         else if (strcmp(command, "exit") == 0) {
             break;
+        }
+        else if (strcmp(command, "test") == 0) {
+            test(disk);
         }
         else {
             
